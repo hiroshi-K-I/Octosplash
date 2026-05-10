@@ -3,27 +3,28 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=800, initial-scale=1.0">
-<title>ChromaSplash</title>
+<title>ChromaSplash v2</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body {
-  background: radial-gradient(ellipse at center, #1a1a3e 0%, #0a0a1a 100%);
+html, body {
+  background: #060610;
   display: flex; justify-content: center; align-items: center;
   min-height: 100vh; overflow: hidden;
-  font-family: 'Courier New', monospace;
 }
 #wrap {
-  position: relative;
-  width: 800px; height: 480px;
-  box-shadow: 0 0 60px rgba(78,205,196,.4), 0 0 120px rgba(255,107,107,.25);
+  position: relative; width: 800px; height: 480px;
+  box-shadow:
+    0 0 0 2px #1a1a40,
+    0 0 40px rgba(255,15,123,.5),
+    0 0 80px rgba(0,229,255,.35),
+    0 0 160px rgba(0,0,0,.8);
 }
 canvas {
   display: block; position: absolute; top: 0; left: 0;
   width: 800px; height: 480px;
-  image-rendering: pixelated;
 }
 #paintCanvas { z-index: 0; }
-#gameCanvas  { z-index: 1; }
+#gameCanvas  { z-index: 1; cursor: crosshair; }
 </style>
 </head>
 <body>
@@ -34,67 +35,12 @@ canvas {
 <script>
 'use strict';
 // ================================================================
-//  ChromaSplash — 2D Territory Paint Action
+//  ChromaSplash v2 — Neon Top-Down Ink Territory Action
 // ================================================================
 
-// ── Constants ──────────────────────────────────────────────────
-const W = 800, H = 480, TS = 32;
-const ROWS_N = H / TS;   // 15
-const COLS_N = W / TS;   // 25
-const FPS = 60;
-const GAME_SEC = 180;
-const GRAVITY = 0.55;
-const JUMP_VEL = -13;
-const P_SPEED = 3.8;
-const SHOT_SPEED = 14;
-const INK_COST = 12;       // % per shot
-const INK_REGEN_OWN = 28; // % per sec on own ink
-const INK_REGEN_BASE = 4;  // % per sec always
-const SPLAT_R = 32;        // paint radius on land
-const TILE_PAINT_R = 1.2;  // tile-radius for gameplay paint check
+// ── Canvas setup ────────────────────────────────────────────────
+const W = 800, H = 480;
 
-// ── Palette ────────────────────────────────────────────────────
-const PAL = {
-  A: { main:'#FF6B6B', body:'#FF8E53', light:'#FFB88C', dark:'#C73232', darkBody:'#D44020', eye:'#FF2255' },
-  B: { main:'#4ECDC4', body:'#45B7AA', light:'#A8E6CF', dark:'#1F7A74', darkBody:'#2A7060', eye:'#00CCCC' },
-  wall:   '#5C4E8A', wallL:'#7A6AAA', wallD:'#3A3060',
-  floor:  '#C8B8A8', floorD:'#A89880',
-  sky1:   '#12122A', sky2:  '#1E1E48',
-  bld1:   '#1A1A38', bld2:  '#242450',
-  win:    '#FFE080', winD:  '#FF9040',
-  text:   '#FFF8F0', gold:  '#FFE66D',
-  shadow: 'rgba(0,0,0,0.35)',
-};
-
-// ── Map ────────────────────────────────────────────────────────
-// 0=air  1=solid wall  2=paintable floor
-const MAP_STR = [
-  '1111111111111111111111111',  // 0   y=0
-  '1000000000000000000000001',  // 1
-  '1000000000000000000000001',  // 2
-  '1000022200000000022200001',  // 3   top side platforms
-  '1000000000022220000000001',  // 4   center high
-  '1000000000000000000000001',  // 5
-  '1000000000000000000000001',  // 6
-  '1002222000000000002222001',  // 7   mid side platforms
-  '1000000000000000000000001',  // 8
-  '1000000022222222000000001',  // 9   center mid
-  '1000000000000000000000001',  // 10
-  '1000000000000000000000001',  // 11
-  '1222222222222222222222221',  // 12  main ground ← paint here
-  '1111111111111111111111111',  // 13
-  '1111111111111111111111111',  // 14
-];
-const MAP = MAP_STR.map(r => [...r].map(Number));
-
-function tileAt(col, row) {
-  if (row < 0 || row >= ROWS_N || col < 0 || col >= COLS_N) return 1;
-  return MAP[row][col];
-}
-function isSolid(col, row) { const t = tileAt(col,row); return t===1||t===2; }
-function isPaintable(col, row) { return tileAt(col,row) === 2; }
-
-// ── Canvas setup ───────────────────────────────────────────────
 const paintCanvas = document.getElementById('paintCanvas');
 const pCtx = paintCanvas.getContext('2d');
 paintCanvas.width = W; paintCanvas.height = H;
@@ -103,18 +49,84 @@ const gameCanvas = document.getElementById('gameCanvas');
 const ctx = gameCanvas.getContext('2d');
 gameCanvas.width = W; gameCanvas.height = H;
 
-// Tile paint ownership  [row][col] → 0=none, 1=A, 2=B
-const tileOwner = Array.from({length: ROWS_N}, () => new Uint8Array(COLS_N));
+// ── Arena & obstacles ────────────────────────────────────────────
+const ARENA = { x: 32, y: 32, w: 736, h: 416 };
 
-// ── Input ──────────────────────────────────────────────────────
+const PILLARS = [
+  { x: 126, y: 110, w: 68, h: 68 },   // top-left
+  { x: 606, y: 110, w: 68, h: 68 },   // top-right
+  { x: 126, y: 302, w: 68, h: 68 },   // bottom-left
+  { x: 606, y: 302, w: 68, h: 68 },   // bottom-right
+  { x: 366, y: 192, w: 68, h: 96 },   // center (tall)
+];
+
+function isWall(x, y) {
+  if (x < ARENA.x || x > ARENA.x + ARENA.w || y < ARENA.y || y > ARENA.y + ARENA.h) return true;
+  for (const p of PILLARS) {
+    if (x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h) return true;
+  }
+  return false;
+}
+
+// ── Palette (neon city pop) ──────────────────────────────────────
+const PAL = {
+  A: { main:'#FF0F7B', light:'#FF78B8', dark:'#AA0055', glow:'#FF00FF', faint:'rgba(255,15,123,0.15)' },
+  B: { main:'#00E5FF', light:'#80F0FF', dark:'#0099CC', glow:'#00FFFF', faint:'rgba(0,229,255,0.15)' },
+  bg:    '#060610',
+  arena: '#0C0C22',
+  floor: '#0F0F26',
+  wall:  '#14142E',
+  wallL: '#22224A',
+  wallD: '#080818',
+  grid:  'rgba(60,60,180,0.06)',
+  text:  '#FFFFFF',
+  gold:  '#FFD700',
+  dim:   'rgba(0,0,0,0.55)',
+};
+
+// ── Game constants ───────────────────────────────────────────────
+const GAME_SEC         = 180;
+const PLAYER_R         = 14;
+const PLAYER_SPEED     = 4.2;
+const FRICTION         = 0.80;
+const MAX_AMMO         = 8;
+const AMMO_REGEN_OWN   = 2.5;  // /sec on own ink
+const AMMO_REGEN_BASE  = 0.5;  // /sec always
+const SHOT_COST        = 1;
+const CHARGE_COST      = 3;
+const CHARGE_TIME      = 1.3;   // sec to full charge
+const PROJ_SPEED       = 12;
+const PROJ_SPEED_CHGD  = 9;
+const SPLAT_R          = 30;
+const SPLAT_R_CHGD     = 70;
+const MAX_SPECIAL      = 100;
+const SPECIAL_GAIN_HIT = 20;
+const SPECIAL_GAIN_PAINT = 0.4;
+const MAX_HP           = 3;
+const RESPAWN_SEC      = 3;
+
+// Ownership grid (16px tiles)
+const OWN_TS   = 16;
+const OWN_COLS = Math.ceil(W / OWN_TS);
+const OWN_ROWS = Math.ceil(H / OWN_TS);
+let tileOwner = Array.from({length: OWN_ROWS}, () => new Uint8Array(OWN_COLS));
+
+// Deferred paint splats
+const pendingSplats = [];
+
+// Special ring effects
+const specialEffects = [];
+
+// ── Input ────────────────────────────────────────────────────────
 const keys = {};
-let mouseX = W/2, mouseY = H/2, mouseBtn = false;
+let mouseX = W/2, mouseY = H/2;
+let mouseLB = false, mouseRB = false;
+let mouseDown = false;
 
 document.addEventListener('keydown', e => {
   keys[e.code] = true;
-  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
-  if (e.code === 'Space' && gameState === 'title') startGame();
-  if (e.code === 'Space' && gameState === 'result') initTitle();
+  if (['Space','KeyW','KeyS','KeyA','KeyD','KeyE'].includes(e.code)) e.preventDefault();
+  if (e.code === 'Space' && (gState === 'title' || gState === 'result')) onSpacePress();
 });
 document.addEventListener('keyup', e => { keys[e.code] = false; });
 
@@ -123,231 +135,396 @@ gameCanvas.addEventListener('mousemove', e => {
   mouseX = (e.clientX - r.left) * (W / r.width);
   mouseY = (e.clientY - r.top)  * (H / r.height);
 });
-gameCanvas.addEventListener('mousedown', () => { mouseBtn = true; });
-gameCanvas.addEventListener('mouseup',   () => { mouseBtn = false; });
+gameCanvas.addEventListener('mousedown', e => {
+  if (e.button === 0) mouseLB = true;
+  if (e.button === 2) mouseRB = true;
+});
+gameCanvas.addEventListener('mouseup', e => {
+  if (e.button === 0) mouseLB = false;
+  if (e.button === 2) mouseRB = false;
+});
 gameCanvas.addEventListener('contextmenu', e => e.preventDefault());
 
-// ── Audio ──────────────────────────────────────────────────────
-let audioCtx = null;
-let bgmNode = null, bgmGain = null;
+// ── Audio ────────────────────────────────────────────────────────
+let aCtx = null;
+let bgmGain = null;
+let bgmActive = false;
 
-function getAudioCtx() {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-  return audioCtx;
+function getAC() {
+  if (!aCtx) aCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (aCtx.state === 'suspended') aCtx.resume().catch(()=>{});
+  return aCtx;
 }
 
-function playSound(type, team) {
+function sfx(type, team) {
   try {
-    const ac = getAudioCtx();
-    const master = ac.createGain();
-    master.gain.setValueAtTime(0.18, ac.currentTime);
-    master.connect(ac.destination);
+    const ac = getAC();
+    const out = ac.createGain();
+    out.gain.value = 0.14;
+    out.connect(ac.destination);
+    const now = ac.currentTime;
 
     if (type === 'shoot') {
-      const osc = ac.createOscillator();
+      const o = ac.createOscillator();
       const g = ac.createGain();
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(team==='A' ? 660 : 520, ac.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(team==='A' ? 220 : 180, ac.currentTime + 0.12);
-      g.gain.setValueAtTime(1, ac.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.14);
-      osc.connect(g); g.connect(master);
-      osc.start(); osc.stop(ac.currentTime + 0.15);
-    } else if (type === 'splat') {
-      const buf = ac.createBuffer(1, ac.sampleRate * 0.15, ac.sampleRate);
-      const d = buf.getChannelData(0);
-      for (let i = 0; i < d.length; i++) d[i] = (Math.random()*2-1) * Math.pow(1 - i/d.length, 2);
-      const src = ac.createBufferSource();
-      const filt = ac.createBiquadFilter();
-      filt.type = 'bandpass';
-      filt.frequency.value = team==='A' ? 800 : 600;
-      filt.Q.value = 0.8;
-      src.buffer = buf;
-      src.connect(filt); filt.connect(master);
-      src.start();
-    } else if (type === 'jump') {
-      const osc = ac.createOscillator();
-      const g = ac.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(300, ac.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(600, ac.currentTime + 0.1);
-      g.gain.setValueAtTime(0.5, ac.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.12);
-      osc.connect(g); g.connect(master);
-      osc.start(); osc.stop(ac.currentTime + 0.12);
-    } else if (type === 'win') {
-      [0,4,7,12].forEach((n, i) => {
-        const osc = ac.createOscillator();
-        const g = ac.createGain();
-        const freq = 440 * Math.pow(2, n/12);
-        osc.frequency.value = freq;
-        osc.type = 'triangle';
-        g.gain.setValueAtTime(0, ac.currentTime + i*0.1);
-        g.gain.linearRampToValueAtTime(0.4, ac.currentTime + i*0.1 + 0.05);
-        g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + i*0.1 + 0.5);
-        osc.connect(g); g.connect(master);
-        osc.start(ac.currentTime + i*0.1);
-        osc.stop(ac.currentTime + i*0.1 + 0.5);
+      o.type = 'square';
+      o.frequency.setValueAtTime(team==='A' ? 700 : 550, now);
+      o.frequency.exponentialRampToValueAtTime(team==='A' ? 250 : 200, now+0.10);
+      g.gain.setValueAtTime(1, now); g.gain.exponentialRampToValueAtTime(0.001, now+0.12);
+      o.connect(g); g.connect(out); o.start(now); o.stop(now+0.13);
+    } else if (type === 'chargeShoot') {
+      [0,7,12].forEach((n,i) => {
+        const o = ac.createOscillator(); const g = ac.createGain();
+        o.type = 'sawtooth';
+        o.frequency.value = (team==='A'?300:220) * Math.pow(2, n/12);
+        g.gain.setValueAtTime(0, now+i*0.04);
+        g.gain.linearRampToValueAtTime(0.5, now+i*0.04+0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, now+i*0.04+0.18);
+        o.connect(g); g.connect(out); o.start(now+i*0.04); o.stop(now+i*0.04+0.2);
       });
+    } else if (type === 'splat') {
+      const buf = ac.createBuffer(1, ac.sampleRate*0.18, ac.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,1.8);
+      const src = ac.createBufferSource(); src.buffer = buf;
+      const flt = ac.createBiquadFilter(); flt.type='bandpass'; flt.frequency.value=team==='A'?900:700; flt.Q.value=0.6;
+      src.connect(flt); flt.connect(out); src.start(now);
+    } else if (type === 'bigSplat') {
+      const buf = ac.createBuffer(1, ac.sampleRate*0.3, ac.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,1.2);
+      const src = ac.createBufferSource(); src.buffer = buf;
+      const flt = ac.createBiquadFilter(); flt.type='lowpass'; flt.frequency.value=500;
+      const g2 = ac.createGain(); g2.gain.value=0.8;
+      src.connect(flt); flt.connect(g2); g2.connect(out); src.start(now);
+    } else if (type === 'special') {
+      const dur = 0.6;
+      const o = ac.createOscillator(); const g = ac.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(200, now);
+      o.frequency.exponentialRampToValueAtTime(1200, now+dur*0.5);
+      o.frequency.exponentialRampToValueAtTime(80, now+dur);
+      g.gain.setValueAtTime(0.6, now); g.gain.exponentialRampToValueAtTime(0.001, now+dur);
+      o.connect(g); g.connect(out); o.start(now); o.stop(now+dur);
+      out.gain.value = 0.3;
+    } else if (type === 'hit') {
+      const o = ac.createOscillator(); const g = ac.createGain();
+      o.type = 'triangle'; o.frequency.setValueAtTime(150, now);
+      o.frequency.exponentialRampToValueAtTime(50, now+0.15);
+      g.gain.setValueAtTime(0.8, now); g.gain.exponentialRampToValueAtTime(0.001, now+0.2);
+      o.connect(g); g.connect(out); o.start(now); o.stop(now+0.2);
+    } else if (type === 'win') {
+      [0,4,7,12,16].forEach((n,i) => {
+        const o=ac.createOscillator(); const g=ac.createGain();
+        o.frequency.value = 440*Math.pow(2,n/12);
+        o.type='triangle';
+        g.gain.setValueAtTime(0,now+i*0.09);
+        g.gain.linearRampToValueAtTime(0.4,now+i*0.09+0.05);
+        g.gain.exponentialRampToValueAtTime(0.001,now+i*0.09+0.6);
+        o.connect(g); g.connect(out); o.start(now+i*0.09); o.stop(now+i*0.09+0.7);
+      });
+      out.gain.value=0.3;
+    } else if (type === 'charge') {
+      const o = ac.createOscillator(); const g = ac.createGain();
+      o.type='sine'; o.frequency.setValueAtTime(300, now);
+      o.frequency.linearRampToValueAtTime(team==='A'?800:600, now+CHARGE_TIME);
+      g.gain.setValueAtTime(0.05, now); g.gain.linearRampToValueAtTime(0.25, now+CHARGE_TIME);
+      o.connect(g); g.connect(out); o.start(now); o.stop(now+CHARGE_TIME+0.1);
+      return o; // return so we can stop early
     }
   } catch(e) {}
+  return null;
 }
 
 function startBGM() {
+  if (bgmActive) return;
+  bgmActive = true;
   try {
-    const ac = getAudioCtx();
-    if (bgmNode) { bgmNode.disconnect(); bgmNode = null; }
-
+    const ac = getAC();
     bgmGain = ac.createGain();
-    bgmGain.gain.value = 0.06;
+    bgmGain.gain.value = 0.065;
     bgmGain.connect(ac.destination);
 
-    // Simple city-pop drum loop + chord pattern
-    const BPM = 108;
-    const beat = 60 / BPM;
-    const bars = 4;
-    const loopLen = bars * 4 * beat;
+    const BPM = 114, beat = 60/BPM, bars = 4, loop = bars*4*beat;
 
-    // Chord progression: Fmaj7 → Em7 → Am7 → Dm7 (city pop!)
+    // Chord prog: Cmaj7 → Am7 → Fmaj7 → G7 (bright city pop)
     const chords = [
-      [65,69,72,76], // Fmaj7 (F A C E)
-      [64,67,71,74], // Em7
-      [57,60,64,67], // Am7
-      [62,65,69,72], // Dm7
+      [60,64,67,71],  // Cmaj7
+      [57,60,64,67],  // Am7
+      [65,69,72,76],  // Fmaj7
+      [67,71,74,77],  // G7
     ];
+    const noteFreq = n => 440*Math.pow(2,(n-69)/12);
 
-    function noteFreq(midi) { return 440 * Math.pow(2, (midi - 69) / 12); }
-
-    function scheduleBar(startTime) {
-      chords.forEach((chord, ci) => {
-        const cStart = startTime + ci * beat * 4;
-        chord.forEach(midi => {
-          const osc = ac.createOscillator();
-          const g = ac.createGain();
-          osc.type = 'sine';
-          osc.frequency.value = noteFreq(midi - 12);
-          g.gain.setValueAtTime(0, cStart);
-          g.gain.linearRampToValueAtTime(0.15, cStart + 0.02);
-          g.gain.setValueAtTime(0.12, cStart + beat*3.5);
-          g.gain.linearRampToValueAtTime(0, cStart + beat*4);
-          osc.connect(g); g.connect(bgmGain);
-          osc.start(cStart); osc.stop(cStart + beat*4);
+    function scheduleLoop(t0) {
+      chords.forEach((ch, ci) => {
+        const cs = t0 + ci*beat*4;
+        // Chord stab (short, rhythmic)
+        [0, beat*1.5, beat*2.5].forEach(offset => {
+          ch.forEach(midi => {
+            const o=ac.createOscillator(); const g=ac.createGain();
+            o.type='triangle'; o.frequency.value=noteFreq(midi-12);
+            const st=cs+offset;
+            g.gain.setValueAtTime(0,st); g.gain.linearRampToValueAtTime(0.12,st+0.02);
+            g.gain.setValueAtTime(0.10,st+0.18); g.gain.linearRampToValueAtTime(0,st+0.22);
+            o.connect(g); g.connect(bgmGain); o.start(st); o.stop(st+0.25);
+          });
         });
 
-        // Hi-hat pattern
-        for (let b = 0; b < 8; b++) {
-          const t = cStart + b * beat * 0.5;
-          const buf = ac.createBuffer(1, ac.sampleRate * 0.04, ac.sampleRate);
-          const d = buf.getChannelData(0);
-          for (let i = 0; i < d.length; i++) d[i] = (Math.random()*2-1) * (1 - i/d.length);
-          const src = ac.createBufferSource();
-          const hg = ac.createGain();
-          const filt = ac.createBiquadFilter();
-          filt.type = 'highpass'; filt.frequency.value = 8000;
-          hg.gain.value = b%2===0 ? 0.3 : 0.15;
-          src.buffer = buf;
-          src.connect(filt); filt.connect(hg); hg.connect(bgmGain);
-          src.start(t); src.stop(t + 0.04);
-        }
+        // Bass note
+        const bass = ch[0] - 12;
+        [0, beat*2].forEach(offset => {
+          const o=ac.createOscillator(); const g=ac.createGain();
+          o.type='sine'; o.frequency.value=noteFreq(bass);
+          const st=cs+offset;
+          g.gain.setValueAtTime(0.3,st); g.gain.exponentialRampToValueAtTime(0.001,st+beat*1.8);
+          o.connect(g); g.connect(bgmGain); o.start(st); o.stop(st+beat*2);
+        });
 
-        // Kick on beat 1
-        {
-          const osc = ac.createOscillator();
-          const g = ac.createGain();
-          osc.frequency.setValueAtTime(150, cStart);
-          osc.frequency.exponentialRampToValueAtTime(40, cStart + 0.1);
-          g.gain.setValueAtTime(0.8, cStart);
-          g.gain.exponentialRampToValueAtTime(0.001, cStart + 0.15);
-          osc.connect(g); g.connect(bgmGain);
-          osc.start(cStart); osc.stop(cStart + 0.2);
+        // Drums every bar
+        for(let b=0;b<8;b++) {
+          const t=cs+b*beat*0.5;
+          // Hi-hat
+          const hbuf=ac.createBuffer(1,ac.sampleRate*0.04,ac.sampleRate);
+          const hd=hbuf.getChannelData(0);
+          for(let i=0;i<hd.length;i++) hd[i]=(Math.random()*2-1)*(1-i/hd.length);
+          const hs=ac.createBufferSource(); hs.buffer=hbuf;
+          const hf=ac.createBiquadFilter(); hf.type='highpass'; hf.frequency.value=9000;
+          const hg=ac.createGain(); hg.gain.value=b%2===0?0.25:0.12;
+          hs.connect(hf); hf.connect(hg); hg.connect(bgmGain); hs.start(t); hs.stop(t+0.04);
         }
-        // Snare on beat 3
-        {
-          const t = cStart + beat * 2;
-          const buf = ac.createBuffer(1, ac.sampleRate * 0.12, ac.sampleRate);
-          const d = buf.getChannelData(0);
-          for (let i = 0; i < d.length; i++) d[i] = (Math.random()*2-1) * Math.pow(1 - i/d.length, 1.5);
-          const src = ac.createBufferSource();
-          const g = ac.createGain(); g.gain.value = 0.5;
-          src.buffer = buf; src.connect(g); g.connect(bgmGain);
-          src.start(t); src.stop(t + 0.12);
-        }
+        // Kick
+        { const o=ac.createOscillator(); const g=ac.createGain();
+          o.frequency.setValueAtTime(160,cs); o.frequency.exponentialRampToValueAtTime(40,cs+0.1);
+          g.gain.setValueAtTime(0.9,cs); g.gain.exponentialRampToValueAtTime(0.001,cs+0.18);
+          o.connect(g); g.connect(bgmGain); o.start(cs); o.stop(cs+0.2); }
+        // Snare
+        { const t=cs+beat*2;
+          const buf=ac.createBuffer(1,ac.sampleRate*0.12,ac.sampleRate);
+          const d=buf.getChannelData(0);
+          for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,1.4);
+          const src=ac.createBufferSource(); src.buffer=buf;
+          const g=ac.createGain(); g.gain.value=0.6;
+          src.connect(g); g.connect(bgmGain); src.start(t); src.stop(t+0.13); }
+        // Open hi-hat on 3.5
+        { const t=cs+beat*3.5;
+          const buf=ac.createBuffer(1,ac.sampleRate*0.12,ac.sampleRate);
+          const d=buf.getChannelData(0);
+          for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*(1-i/d.length)*0.7;
+          const src=ac.createBufferSource(); src.buffer=buf;
+          const flt=ac.createBiquadFilter(); flt.type='highpass'; flt.frequency.value=7000;
+          const g=ac.createGain(); g.gain.value=0.35;
+          src.connect(flt); flt.connect(g); g.connect(bgmGain); src.start(t); src.stop(t+0.13); }
       });
     }
 
-    let nextLoop = ac.currentTime;
-    function loop() {
+    let nextT = ac.currentTime;
+    function tick() {
       if (!bgmGain) return;
-      if (nextLoop < ac.currentTime + 0.5) {
-        scheduleBar(nextLoop);
-        nextLoop += loopLen;
+      while (nextT < ac.currentTime + 0.5) {
+        scheduleLoop(nextT);
+        nextT += loop;
       }
-      bgmNode = { disconnect: () => { bgmGain.gain.setValueAtTime(bgmGain.gain.value, ac.currentTime); bgmGain.gain.linearRampToValueAtTime(0, ac.currentTime+0.5); bgmGain = null; } };
-      setTimeout(loop, 200);
+      setTimeout(tick, 200);
     }
-    loop();
+    tick();
   } catch(e) {}
 }
 
-function stopBGM() { if (bgmGain) { try { bgmGain.gain.linearRampToValueAtTime(0, getAudioCtx().currentTime + 0.3); } catch(e){} bgmGain = null; } }
+function stopBGM() {
+  bgmActive = false;
+  if (bgmGain) {
+    try { bgmGain.gain.linearRampToValueAtTime(0, getAC().currentTime + 0.4); } catch(e){}
+    bgmGain = null;
+  }
+}
 
-// ── Particles ──────────────────────────────────────────────────
+// ── Paint system ─────────────────────────────────────────────────
+function paintCircle(x, y, team, r) {
+  if (r < 1) return;
+  const col = PAL[team].main;
+  const lit = PAL[team].light;
+  const glw = PAL[team].glow;
+
+  // Outer glow halo
+  const grad = pCtx.createRadialGradient(x, y, r*0.2, x, y, r*1.4);
+  grad.addColorStop(0,   col);
+  grad.addColorStop(0.55, col + 'CC');
+  grad.addColorStop(0.85, glw + '44');
+  grad.addColorStop(1,   glw + '00');
+  pCtx.fillStyle = grad;
+  pCtx.beginPath(); pCtx.arc(x, y, r*1.4, 0, Math.PI*2); pCtx.fill();
+
+  // Core
+  pCtx.fillStyle = col;
+  pCtx.beginPath(); pCtx.arc(x, y, r, 0, Math.PI*2); pCtx.fill();
+
+  // Highlight
+  pCtx.fillStyle = lit + 'AA';
+  pCtx.beginPath(); pCtx.arc(x - r*0.28, y - r*0.28, r*0.42, 0, Math.PI*2); pCtx.fill();
+  pCtx.fillStyle = 'rgba(255,255,255,0.55)';
+  pCtx.beginPath(); pCtx.arc(x - r*0.38, y - r*0.38, r*0.15, 0, Math.PI*2); pCtx.fill();
+
+  // Irregular edge blobs
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI*2 + Math.random();
+    const d = r * (0.55 + Math.random() * 0.35);
+    const br = r * (0.12 + Math.random() * 0.2);
+    pCtx.fillStyle = col + 'CC';
+    pCtx.beginPath(); pCtx.arc(x + Math.cos(a)*d, y + Math.sin(a)*d, br, 0, Math.PI*2); pCtx.fill();
+  }
+
+  // Tile ownership
+  const tTeam = team === 'A' ? 1 : 2;
+  const tr = Math.ceil((r * 1.4) / OWN_TS) + 1;
+  const cx = Math.floor(x / OWN_TS), cy = Math.floor(y / OWN_TS);
+  let newTiles = 0;
+  for (let dr = -tr; dr <= tr; dr++) {
+    for (let dc = -tr; dc <= tr; dc++) {
+      const col2 = cx + dc, row = cy + dr;
+      if (col2 < 0 || col2 >= OWN_COLS || row < 0 || row >= OWN_ROWS) continue;
+      const tx = col2 * OWN_TS + OWN_TS/2, ty = row * OWN_TS + OWN_TS/2;
+      if (Math.hypot(tx-x, ty-y) < r * 1.1 && !isWall(tx, ty)) {
+        if (tileOwner[row][col2] !== tTeam) newTiles++;
+        tileOwner[row][col2] = tTeam;
+      }
+    }
+  }
+  return newTiles;
+}
+
+function triggerSplat(x, y, team, r, depth = 0) {
+  const newTiles = paintCircle(x, y, team, r) || 0;
+
+  // Primary splatter → secondary drops
+  if (depth === 0) {
+    const count = 10 + Math.floor(Math.random() * 6);
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist  = r * (0.4 + Math.random() * 0.9);
+      const subR  = r * (0.15 + Math.random() * 0.22);
+      pendingSplats.push({
+        x: x + Math.cos(angle) * dist,
+        y: y + Math.sin(angle) * dist,
+        team, r: subR,
+        timer: 0.04 + Math.random() * 0.09,
+        depth: 1,
+      });
+    }
+  } else if (depth === 1 && r > 8) {
+    // Secondary drops → tiny tertiary
+    const count = 2 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      pendingSplats.push({
+        x: x + Math.cos(angle) * r * 1.2,
+        y: y + Math.sin(angle) * r * 1.2,
+        team, r: r * (0.3 + Math.random() * 0.3),
+        timer: 0.03 + Math.random() * 0.06,
+        depth: 2,
+      });
+    }
+  }
+  return newTiles;
+}
+
+function updateSplats(dt) {
+  for (let i = pendingSplats.length - 1; i >= 0; i--) {
+    const s = pendingSplats[i];
+    s.timer -= dt;
+    if (s.timer <= 0) {
+      const ns = pendingSplats.splice(i, 1)[0];
+      if (!isWall(ns.x, ns.y)) {
+        paintCircle(ns.x, ns.y, ns.team, ns.r);
+        spawnInkParticles(ns.x, ns.y, ns.team, ns.depth === 1 ? 4 : 2);
+      }
+    }
+  }
+}
+
+function updateSpecialEffects(dt) {
+  for (let i = specialEffects.length - 1; i >= 0; i--) {
+    const e = specialEffects[i];
+    e.r  += e.speed * dt;
+    e.r2 += e.speed * dt * 1.4;
+    e.alpha -= dt * e.fadeRate;
+    if (e.alpha <= 0) specialEffects.splice(i, 1);
+  }
+}
+
+function getPaintPercents() {
+  let total = 0, a = 0, b = 0;
+  for (let row = 0; row < OWN_ROWS; row++) {
+    for (let col = 0; col < OWN_COLS; col++) {
+      const cx = col * OWN_TS + OWN_TS/2, cy = row * OWN_TS + OWN_TS/2;
+      if (isWall(cx, cy)) continue;
+      total++;
+      if (tileOwner[row][col] === 1) a++;
+      else if (tileOwner[row][col] === 2) b++;
+    }
+  }
+  if (!total) return { a: 0, b: 0 };
+  return { a: a/total*100, b: b/total*100 };
+}
+
+function getOwnerAt(x, y) {
+  const col = Math.floor(x / OWN_TS), row = Math.floor(y / OWN_TS);
+  if (col < 0 || col >= OWN_COLS || row < 0 || row >= OWN_ROWS) return 0;
+  return tileOwner[row][col];
+}
+
+// ── Particles ─────────────────────────────────────────────────────
 const particles = [];
 
-function spawnSplat(x, y, team, count = 10) {
+function spawnInkParticles(x, y, team, count) {
   for (let i = 0; i < count; i++) {
-    const angle = Math.random() * Math.PI * 2;
-    const speed = 1.5 + Math.random() * 5;
+    const a = Math.random() * Math.PI*2;
+    const spd = 1.5 + Math.random() * 4.5;
     particles.push({
       x, y,
-      vx: Math.cos(angle) * speed,
-      vy: Math.sin(angle) * speed - 2,
-      r: 3 + Math.random() * 5,
+      vx: Math.cos(a)*spd, vy: Math.sin(a)*spd,
+      r: 2 + Math.random()*4,
       color: Math.random() < 0.6 ? PAL[team].main : PAL[team].light,
-      alpha: 1,
-      life: 0.6 + Math.random() * 0.4,
-      maxLife: 0,
-      gravity: 0.3,
+      glow: PAL[team].glow,
+      life: 0.4 + Math.random()*0.4,
+      maxLife: 0.8,
+      friction: 0.92,
     });
     particles[particles.length-1].maxLife = particles[particles.length-1].life;
   }
 }
 
-function spawnHit(x, y) {
-  for (let i = 0; i < 6; i++) {
-    const angle = Math.random() * Math.PI * 2;
+function spawnHitParticles(x, y, team) {
+  for (let i = 0; i < 12; i++) {
+    const a = Math.random() * Math.PI*2;
+    const spd = 2 + Math.random() * 6;
     particles.push({
       x, y,
-      vx: Math.cos(angle) * (2 + Math.random()*3),
-      vy: Math.sin(angle) * (2 + Math.random()*3),
-      r: 2 + Math.random()*3,
-      color: '#FFF8F0',
-      alpha: 1,
-      life: 0.3 + Math.random()*0.2,
-      maxLife: 0.5,
-      gravity: 0.15,
+      vx: Math.cos(a)*spd, vy: Math.sin(a)*spd,
+      r: 3 + Math.random()*5,
+      color: PAL[team].light,
+      glow: PAL[team].glow,
+      life: 0.5 + Math.random()*0.3,
+      maxLife: 0.8,
+      friction: 0.88,
     });
     particles[particles.length-1].maxLife = particles[particles.length-1].life;
   }
 }
 
-function spawnConfetti(x, y, count = 20) {
+function spawnConfetti(x, y, count) {
+  const cols = [PAL.A.main, PAL.B.main, PAL.gold, PAL.A.light, PAL.B.light, '#fff'];
   for (let i = 0; i < count; i++) {
-    const colors = [PAL.A.main, PAL.B.main, PAL.gold, PAL.A.light, PAL.B.light, '#ffffff'];
-    const angle = -Math.PI/2 + (Math.random()-0.5) * Math.PI * 0.8;
+    const a = -Math.PI/2 + (Math.random()-0.5) * Math.PI;
+    const spd = 3 + Math.random() * 8;
     particles.push({
-      x, y,
-      vx: Math.cos(angle) * (3 + Math.random()*6),
-      vy: Math.sin(angle) * (3 + Math.random()*6),
-      r: 4 + Math.random()*4,
-      color: colors[Math.floor(Math.random()*colors.length)],
-      alpha: 1,
-      life: 1.5 + Math.random(),
-      maxLife: 0,
-      gravity: 0.1,
-      rot: Math.random()*Math.PI*2,
-      rotV: (Math.random()-0.5)*0.3,
+      x, y, vx: Math.cos(a)*spd, vy: Math.sin(a)*spd,
+      r: 3 + Math.random()*5,
+      color: cols[Math.floor(Math.random()*cols.length)],
+      glow: null,
+      life: 1.5 + Math.random(), maxLife: 0,
+      friction: 0.97, gravity: 0.08,
+      rot: Math.random()*Math.PI*2, rotV: (Math.random()-0.5)*0.4,
       square: true,
     });
     particles[particles.length-1].maxLife = particles[particles.length-1].life;
@@ -355,1162 +532,1404 @@ function spawnConfetti(x, y, count = 20) {
 }
 
 function updateParticles(dt) {
-  for (let i = particles.length - 1; i >= 0; i--) {
+  for (let i = particles.length-1; i >= 0; i--) {
     const p = particles[i];
-    p.x += p.vx;
-    p.y += p.vy;
-    p.vy += p.gravity;
-    p.vx *= 0.97;
-    p.life -= dt;
-    p.alpha = Math.max(0, p.life / p.maxLife);
+    p.vx *= p.friction; p.vy *= p.friction;
+    if (p.gravity) p.vy += p.gravity;
+    p.x += p.vx; p.y += p.vy;
     if (p.rot !== undefined) p.rot += p.rotV;
+    p.life -= dt;
     if (p.life <= 0) particles.splice(i, 1);
   }
 }
 
-function drawParticles() {
-  for (const p of particles) {
-    ctx.save();
-    ctx.globalAlpha = p.alpha;
-    ctx.fillStyle = p.color;
-    if (p.square) {
-      ctx.translate(p.x, p.y);
-      ctx.rotate(p.rot || 0);
-      ctx.fillRect(-p.r/2, -p.r/2, p.r, p.r);
-    } else {
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-}
-
-// ── Paint System ───────────────────────────────────────────────
-function paintSplat(x, y, team, r) {
-  // Visual on paint canvas
-  pCtx.save();
-  pCtx.globalCompositeOperation = 'source-over';
-
-  const grad = pCtx.createRadialGradient(x, y, 0, x, y, r);
-  const col = PAL[team].main;
-  grad.addColorStop(0,   col + 'FF');
-  grad.addColorStop(0.7, col + 'DD');
-  grad.addColorStop(1,   col + '00');
-  pCtx.fillStyle = grad;
-  pCtx.beginPath(); pCtx.arc(x, y, r, 0, Math.PI*2); pCtx.fill();
-
-  // Extra blobs for irregular shape
-  for (let i = 0; i < 5; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const d = r * 0.5 * Math.random();
-    const br = r * (0.2 + Math.random() * 0.4);
-    pCtx.fillStyle = col + 'BB';
-    pCtx.beginPath();
-    pCtx.arc(x + Math.cos(a)*d, y + Math.sin(a)*d, br, 0, Math.PI*2);
-    pCtx.fill();
-  }
-  pCtx.restore();
-
-  // Gameplay tile ownership
-  const tileTeam = team === 'A' ? 1 : 2;
-  const tr = Math.ceil(r / TS) + 1;
-  const cx = Math.floor(x / TS), cy = Math.floor(y / TS);
-  for (let dr = -tr; dr <= tr; dr++) {
-    for (let dc = -tr; dc <= tr; dc++) {
-      const col2 = cx + dc, row2 = cy + dr;
-      if (isPaintable(col2, row2)) {
-        const tx = col2 * TS + TS/2, ty = row2 * TS + TS/2;
-        const dist = Math.hypot(tx - x, ty - y);
-        if (dist < r * TILE_PAINT_R) {
-          tileOwner[row2][col2] = tileTeam;
-        }
-      }
-    }
-  }
-}
-
-function getPaintPercents() {
-  let total = 0, a = 0, b = 0;
-  for (let r = 0; r < ROWS_N; r++) {
-    for (let c = 0; c < COLS_N; c++) {
-      if (MAP[r][c] === 2) {
-        total++;
-        if (tileOwner[r][c] === 1) a++;
-        else if (tileOwner[r][c] === 2) b++;
-      }
-    }
-  }
-  if (total === 0) return { a: 0, b: 0 };
-  return { a: a/total*100, b: b/total*100 };
-}
-
-function getOwnerAt(x, y) {
-  const col = Math.floor(x / TS), row = Math.floor(y / TS);
-  if (row < 0 || row >= ROWS_N || col < 0 || col >= COLS_N) return 0;
-  return tileOwner[row][col];
-}
-
-// ── Projectile ─────────────────────────────────────────────────
+// ── Projectile ────────────────────────────────────────────────────
 const projectiles = [];
 
 class Projectile {
-  constructor(x, y, vx, vy, team) {
+  constructor(x, y, angle, team, charged = false) {
     this.x = x; this.y = y;
-    this.vx = vx; this.vy = vy;
+    const spd = charged ? PROJ_SPEED_CHGD : PROJ_SPEED;
+    this.vx = Math.cos(angle) * spd;
+    this.vy = Math.sin(angle) * spd;
     this.team = team;
+    this.charged = charged;
+    this.r = charged ? 11 : 6;
+    this.splatR = charged ? SPLAT_R_CHGD : SPLAT_R;
     this.dead = false;
     this.trail = [];
+    this.life = 4; // seconds max
   }
 
-  update() {
-    this.trail.push({ x: this.x, y: this.y });
-    if (this.trail.length > 6) this.trail.shift();
+  update(dt, players) {
+    this.life -= dt;
+    if (this.life <= 0) { this.dead = true; return; }
 
-    this.vy += GRAVITY * 0.6;
+    this.trail.push({ x: this.x, y: this.y });
+    if (this.trail.length > 10) this.trail.shift();
+
     this.x += this.vx;
     this.y += this.vy;
 
-    // Wall bounce
-    if (this.x < TS || this.x > W - TS) { this.vx *= -0.6; this.x = Math.max(TS, Math.min(W-TS, this.x)); }
+    // Bounce off walls
+    if (this.x < ARENA.x + this.r || this.x > ARENA.x + ARENA.w - this.r) {
+      this.vx *= -0.7;
+      this.x = Math.max(ARENA.x + this.r, Math.min(ARENA.x + ARENA.w - this.r, this.x));
+    }
+    if (this.y < ARENA.y + this.r || this.y > ARENA.y + ARENA.h - this.r) {
+      this.vy *= -0.7;
+      this.y = Math.max(ARENA.y + this.r, Math.min(ARENA.y + ARENA.h - this.r, this.y));
+    }
 
-    // Tile collision
-    const col = Math.floor(this.x / TS), row = Math.floor(this.y / TS);
-    if (isSolid(col, row)) {
-      this.land();
-    } else if (this.y > H) {
-      this.dead = true;
+    // Pillar collision
+    for (const p of PILLARS) {
+      const cx = Math.max(p.x, Math.min(this.x, p.x + p.w));
+      const cy = Math.max(p.y, Math.min(this.y, p.y + p.h));
+      const dx = this.x - cx, dy = this.y - cy;
+      const dist = Math.hypot(dx, dy);
+      if (dist < this.r) {
+        this.land();
+        return;
+      }
+    }
+
+    // Player hit
+    for (const pl of players) {
+      if (pl.dead || pl.team === this.team || pl.respawnFlash > 0) continue;
+      if (Math.hypot(this.x - pl.x, this.y - pl.y) < PLAYER_R + this.r) {
+        pl.takeHit(this.team);
+        this.land(true);
+        return;
+      }
     }
   }
 
-  land() {
-    paintSplat(this.x, this.y, this.team, SPLAT_R);
-    spawnSplat(this.x, this.y, this.team, 14);
-    playSound('splat', this.team);
+  land(hitPlayer = false) {
+    const newTiles = triggerSplat(this.x, this.y, this.team, this.splatR);
+    spawnInkParticles(this.x, this.y, this.team, this.charged ? 20 : 10);
+    sfx(this.charged ? 'bigSplat' : 'splat', this.team);
     this.dead = true;
+    return newTiles;
   }
 
   draw() {
+    const c = PAL[this.team];
     // Trail
     for (let i = 0; i < this.trail.length; i++) {
       const t = this.trail[i];
-      const a = i / this.trail.length * 0.5;
+      const a = (i / this.trail.length);
       ctx.save();
-      ctx.globalAlpha = a;
-      ctx.fillStyle = PAL[this.team].light;
-      ctx.beginPath();
-      ctx.arc(t.x, t.y, 3 * (i/this.trail.length), 0, Math.PI*2);
-      ctx.fill();
+      ctx.globalAlpha = a * 0.6;
+      ctx.fillStyle = c.light;
+      ctx.shadowColor = c.glow;
+      ctx.shadowBlur = 8;
+      const tr = this.r * a * 0.8;
+      ctx.beginPath(); ctx.arc(t.x, t.y, tr, 0, Math.PI*2); ctx.fill();
       ctx.restore();
     }
-    // Blob
-    const r = 7;
+    // Main blob
     ctx.save();
-    ctx.shadowColor = PAL[this.team].main;
-    ctx.shadowBlur = 10;
-    ctx.fillStyle = PAL[this.team].light;
-    ctx.beginPath(); ctx.arc(this.x, this.y, r, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = PAL[this.team].main;
-    ctx.beginPath(); ctx.arc(this.x, this.y, r*0.6, 0, Math.PI*2); ctx.fill();
+    ctx.shadowColor = c.glow;
+    ctx.shadowBlur = this.charged ? 30 : 15;
+    ctx.fillStyle = c.light;
+    ctx.beginPath(); ctx.arc(this.x, this.y, this.r, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = c.main;
+    ctx.beginPath(); ctx.arc(this.x, this.y, this.r * 0.6, 0, Math.PI*2); ctx.fill();
+    if (this.charged) {
+      ctx.globalAlpha = 0.4;
+      ctx.fillStyle = c.glow;
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.r * 1.8, 0, Math.PI*2); ctx.fill();
+    }
     ctx.restore();
   }
 }
 
-// ── Player ─────────────────────────────────────────────────────
+// ── Player ────────────────────────────────────────────────────────
 class Player {
   constructor(x, y, team, isAI = false) {
     this.x = x; this.y = y;
     this.vx = 0; this.vy = 0;
     this.team = team;
     this.isAI = isAI;
-    this.onGround = false;
-    this.facing = team === 'A' ? 1 : -1;
-    this.ink = 100;
+
+    // Facing angle (radians, 0 = right)
+    this.angle = team === 'A' ? 0 : Math.PI;
+    this.targetAngle = this.angle;
+
+    // Ammo (fair: same max for both)
+    this.ammo = MAX_AMMO;
     this.shotCooldown = 0;
-    this.animTime = 0;
-    this.state = 'idle'; // idle|walk|jump|shoot|land|squat
-    this.landTimer = 0;
-    this.shootFlash = 0;
-    this.squatTimer = 0;   // ink refill animation
+
+    // Charge
+    this.charging = false;
+    this.chargeLevel = 0;
+    this.chargeOsc = null;
+
+    // Special
+    this.specialMeter = 0;
+    this.specialCooldown = 0;
+
+    // HP & respawn
+    this.hp = MAX_HP;
     this.dead = false;
     this.respawnTimer = 0;
+    this.respawnFlash = 0;   // brief flash after respawn
+    this.hitFlash = 0;
+
     this.respawnX = x; this.respawnY = y;
-    this.hp = 3;
+
+    // Animation
+    this.animTime = 0;
+    this.speed = 0;
 
     // AI state
-    this.aiState = 'wander';
-    this.aiTarget = { x: W/2, y: H/2 };
     this.aiTimer = 0;
+    this.aiTarget = { x: W/2, y: H/2 };
     this.aiShootTimer = 0;
+    this.aiChargeTimer = 0;
+    this.aiCharging = false;
+    this.aiChargeDur = 0;
   }
 
-  get width() { return 16; }
-  get height() { return 28; }
-  get left()   { return this.x - this.width/2; }
-  get right()  { return this.x + this.width/2; }
-  get top()    { return this.y - this.height; }
-  get bottom() { return this.y; }
-
   update(dt, opponent) {
+    this.animTime += dt;
+    this.hitFlash = Math.max(0, this.hitFlash - dt);
+    this.respawnFlash = Math.max(0, this.respawnFlash - dt);
+    this.shotCooldown = Math.max(0, this.shotCooldown - dt);
+    this.specialCooldown = Math.max(0, this.specialCooldown - dt);
+    this.aiTimer = Math.max(0, this.aiTimer - dt);
+    this.aiShootTimer = Math.max(0, this.aiShootTimer - dt);
+
     if (this.dead) {
       this.respawnTimer -= dt;
-      if (this.respawnTimer <= 0) {
-        this.dead = false;
-        this.x = this.respawnX; this.y = this.respawnY;
-        this.vx = 0; this.vy = 0;
-        this.hp = 3;
-        this.ink = 60;
-      }
+      if (this.respawnTimer <= 0) { this.respawn(); }
       return;
     }
 
-    this.shotCooldown = Math.max(0, this.shotCooldown - dt);
-    this.landTimer    = Math.max(0, this.landTimer - dt);
-    this.shootFlash   = Math.max(0, this.shootFlash - dt);
-    this.aiTimer      = Math.max(0, this.aiTimer - dt);
-    this.aiShootTimer = Math.max(0, this.aiShootTimer - dt);
-
-    // Ink regen
-    const standing = getOwnerAt(this.x, this.y);
+    // Ammo regen
     const ownOwner = this.team === 'A' ? 1 : 2;
-    const regenRate = standing === ownOwner ? INK_REGEN_OWN : INK_REGEN_BASE;
-    this.ink = Math.min(100, this.ink + regenRate * dt);
+    const standing = getOwnerAt(this.x, this.y);
+    const regen = standing === ownOwner ? AMMO_REGEN_OWN : AMMO_REGEN_BASE;
+    this.ammo = Math.min(MAX_AMMO, this.ammo + regen * dt);
 
-    // Squat animation when low ink
-    if (this.ink < 20 && this.onGround) {
-      this.squatTimer += dt;
-      this.state = 'squat';
-    } else {
-      this.squatTimer = 0;
+    // Special cooldown
+    if (this.specialCooldown <= 0) {
+      this.specialMeter = Math.min(MAX_SPECIAL, this.specialMeter + 2 * dt);
     }
 
-    let moveX = 0;
-    let wantJump = false;
-    let wantShoot = false;
-    let aimX = this.x + this.facing * 100, aimY = this.y - 14;
-
-    if (this.isAI) {
-      [moveX, wantJump, wantShoot, aimX, aimY] = this.aiInput(opponent, dt);
-    } else {
-      // WASD + mouse
-      if (keys['KeyA'] || keys['ArrowLeft'])  moveX = -1;
-      if (keys['KeyD'] || keys['ArrowRight']) moveX =  1;
-      wantJump  = keys['KeyW'] || keys['ArrowUp'] || keys['Space'];
-      wantShoot = mouseBtn || keys['KeyJ'];
-      aimX = mouseX; aimY = mouseY;
-    }
-
-    // Speed modifier: slow on enemy ink
+    // Speed modifier
     const enemyOwner = this.team === 'A' ? 2 : 1;
     let speedMult = 1;
-    if (standing === enemyOwner) speedMult = 0.55;
-    else if (standing === ownOwner) speedMult = 1.2;
+    if (standing === enemyOwner) speedMult = 0.5;
+    else if (standing === ownOwner) speedMult = 1.25;
 
-    // Move
-    if (this.state !== 'squat') {
-      this.vx += moveX * P_SPEED * speedMult;
+    let ax = 0, ay = 0;
+    let wantShoot = false, wantSpecial = false, wantRelease = false;
+    let aimAngle = this.angle;
+
+    if (this.isAI) {
+      [ax, ay, wantShoot, wantRelease, wantSpecial, aimAngle] = this.aiLogic(opponent, dt);
+    } else {
+      if (keys['KeyA']) ax -= 1;
+      if (keys['KeyD']) ax += 1;
+      if (keys['KeyW']) ay -= 1;
+      if (keys['KeyS']) ay += 1;
+      if (ax !== 0 || ay !== 0) {
+        const len = Math.hypot(ax, ay);
+        ax /= len; ay /= len;
+      }
+
+      // Aim toward mouse
+      aimAngle = Math.atan2(mouseY - this.y, mouseX - this.x);
+      wantShoot   = mouseLB;
+      wantSpecial = mouseRB || keys['KeyE'];
+      wantRelease = !mouseLB; // release = mouse up
     }
-    this.vx *= 0.78;
 
-    if (Math.abs(moveX) > 0 && this.state !== 'squat') {
-      this.facing = moveX > 0 ? 1 : -1;
-    }
+    // Apply movement
+    this.vx += ax * PLAYER_SPEED * speedMult * 0.7;
+    this.vy += ay * PLAYER_SPEED * speedMult * 0.7;
+    this.vx *= FRICTION;
+    this.vy *= FRICTION;
+    this.speed = Math.hypot(this.vx, this.vy);
 
-    // Jump
-    if (wantJump && this.onGround && this.state !== 'squat') {
-      this.vy = JUMP_VEL;
-      this.onGround = false;
-      playSound('jump');
-    }
-
-    // Shoot
-    if (wantShoot && this.shotCooldown <= 0 && this.ink >= INK_COST && this.state !== 'squat') {
-      this.shoot(aimX, aimY);
-    }
-
-    // Gravity
-    this.vy += GRAVITY;
-
-    // Move & collide
     this.x += this.vx;
-    this.resolveX();
     this.y += this.vy;
-    const wasAir = !this.onGround;
-    this.resolveY();
-    if (wasAir && this.onGround && Math.abs(this.vy) > 3) {
-      this.landTimer = 0.15;
+
+    // Smooth angle rotation
+    this.targetAngle = aimAngle;
+    let da = this.targetAngle - this.angle;
+    while (da > Math.PI) da -= Math.PI*2;
+    while (da < -Math.PI) da += Math.PI*2;
+    this.angle += da * 0.18;
+
+    // Collision
+    this.resolveCollision();
+
+    // Charge mechanic
+    if (wantShoot && this.ammo >= CHARGE_COST && this.shotCooldown <= 0) {
+      if (!this.charging) {
+        this.charging = true;
+        this.chargeLevel = 0;
+        if (!this.isAI) this.chargeOsc = sfx('charge', this.team);
+      }
+      this.chargeLevel = Math.min(1, this.chargeLevel + dt / CHARGE_TIME);
     }
 
-    // Clamp to screen
-    this.x = Math.max(TS + this.width/2, Math.min(W - TS - this.width/2, this.x));
+    if (wantRelease && this.charging) {
+      this.releaseShot(aimAngle);
+    }
 
-    // Anim state
-    if (this.landTimer > 0)        this.state = 'land';
-    else if (!this.onGround)       this.state = 'jump';
-    else if (this.shootFlash > 0)  this.state = 'shoot';
-    else if (this.ink < 20)        this.state = 'squat';
-    else if (Math.abs(this.vx) > 0.5) this.state = 'walk';
-    else                           this.state = 'idle';
-
-    this.animTime += dt;
-  }
-
-  resolveX() {
-    const pad = this.width / 2;
-    // Left wall
-    const lCol = Math.floor((this.x - pad) / TS);
-    const rCol = Math.floor((this.x + pad) / TS);
-    const tRow = Math.floor(this.top    / TS);
-    const bRow = Math.floor((this.bottom - 1) / TS);
-
-    for (let row = tRow; row <= bRow; row++) {
-      if (isSolid(lCol, row) && this.vx < 0) {
-        this.x = (lCol + 1) * TS + pad;
-        this.vx = 0;
-      }
-      if (isSolid(rCol, row) && this.vx > 0) {
-        this.x = rCol * TS - pad;
-        this.vx = 0;
-      }
+    // Special
+    if (wantSpecial && this.specialMeter >= MAX_SPECIAL && this.specialCooldown <= 0) {
+      this.activateSpecial();
     }
   }
 
-  resolveY() {
-    const pad = this.width / 2;
-    const lCol = Math.floor((this.x - pad + 1) / TS);
-    const rCol = Math.floor((this.x + pad - 1) / TS);
+  releaseShot(angle) {
+    const charged = this.chargeLevel >= 0.85;
+    if (this.chargeOsc) { try { this.chargeOsc.stop(); } catch(e){} this.chargeOsc = null; }
+    this.charging = false;
 
-    this.onGround = false;
+    const cost = charged ? CHARGE_COST : SHOT_COST;
+    if (this.ammo < cost) { this.chargeLevel = 0; return; }
+    this.ammo -= cost;
+    this.shotCooldown = charged ? 0.55 : 0.18;
 
-    if (this.vy >= 0) {
-      const bRow = Math.floor(this.bottom / TS);
-      if (isSolid(lCol, bRow) || isSolid(rCol, bRow)) {
-        this.y = bRow * TS;
-        this.vy = 0;
-        this.onGround = true;
-      }
+    const ox = this.x + Math.cos(this.angle) * (PLAYER_R + 14);
+    const oy = this.y + Math.sin(this.angle) * (PLAYER_R + 14);
+    projectiles.push(new Projectile(ox, oy, this.angle, this.team, charged));
+    sfx(charged ? 'chargeShoot' : 'shoot', this.team);
+    this.chargeLevel = 0;
+  }
+
+  activateSpecial() {
+    this.specialMeter = 0;
+    this.specialCooldown = 6;
+
+    sfx('special', this.team);
+
+    // Paint ring burst
+    const bigR = 95;
+    triggerSplat(this.x, this.y, this.team, bigR);
+
+    // Ring of secondary splats
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI*2;
+      const d = 80 + Math.random() * 30;
+      pendingSplats.push({
+        x: this.x + Math.cos(a)*d, y: this.y + Math.sin(a)*d,
+        team: this.team, r: 25 + Math.random()*15,
+        timer: 0.05 + i * 0.035, depth: 1,
+      });
     }
-    if (this.vy < 0) {
-      const tRow = Math.floor(this.top / TS);
-      if (isSolid(lCol, tRow) || isSolid(rCol, tRow)) {
-        this.y = (tRow + 1) * TS + this.height;
-        this.vy = 0;
+
+    // Visual ring effect
+    specialEffects.push({
+      x: this.x, y: this.y, team: this.team,
+      r: PLAYER_R, r2: PLAYER_R * 0.3,
+      alpha: 1, speed: 350, fadeRate: 1.2,
+    });
+    specialEffects.push({
+      x: this.x, y: this.y, team: this.team,
+      r: PLAYER_R, r2: 0,
+      alpha: 0.7, speed: 220, fadeRate: 0.9,
+    });
+
+    spawnInkParticles(this.x, this.y, this.team, 30);
+  }
+
+  takeHit(fromTeam) {
+    this.hp--;
+    this.hitFlash = 0.25;
+    sfx('hit');
+    spawnHitParticles(this.x, this.y, this.team);
+    if (this.hp <= 0) {
+      this.die();
+    }
+  }
+
+  die() {
+    this.dead = true;
+    this.respawnTimer = RESPAWN_SEC;
+    // Explosion of ink
+    for (let i = 0; i < 6; i++) {
+      const a = (i/6)*Math.PI*2;
+      pendingSplats.push({
+        x: this.x + Math.cos(a)*20, y: this.y + Math.sin(a)*20,
+        team: this.team, r: 18, timer: i*0.04, depth: 2,
+      });
+    }
+    // Opponent gains special
+    // (handled in game loop via return value or global ref)
+  }
+
+  respawn() {
+    this.dead = false;
+    this.hp = MAX_HP;
+    this.x = this.respawnX; this.y = this.respawnY;
+    this.vx = 0; this.vy = 0;
+    this.ammo = MAX_AMMO * 0.5;
+    this.respawnFlash = 1.5; // invincibility blink
+    paintCircle(this.x, this.y, this.team, 35);
+  }
+
+  resolveCollision() {
+    // Arena bounds
+    const m = PLAYER_R;
+    this.x = Math.max(ARENA.x + m, Math.min(ARENA.x + ARENA.w - m, this.x));
+    this.y = Math.max(ARENA.y + m, Math.min(ARENA.y + ARENA.h - m, this.y));
+
+    // Pillars
+    for (const p of PILLARS) {
+      const cx2 = Math.max(p.x, Math.min(this.x, p.x + p.w));
+      const cy2 = Math.max(p.y, Math.min(this.y, p.y + p.h));
+      const dx = this.x - cx2, dy = this.y - cy2;
+      const dist = Math.hypot(dx, dy);
+      if (dist < m && dist > 0) {
+        const push = m - dist;
+        this.x += (dx/dist) * push;
+        this.y += (dy/dist) * push;
+        // Dampen velocity in push direction
+        const dot = this.vx*(dx/dist) + this.vy*(dy/dist);
+        if (dot < 0) {
+          this.vx -= dot*(dx/dist)*1.2;
+          this.vy -= dot*(dy/dist)*1.2;
+        }
       }
     }
   }
 
-  shoot(aimX, aimY) {
-    const ox = this.x + this.facing * 10;
-    const oy = this.y - 18;
-    const dx = aimX - ox, dy = aimY - oy;
-    const len = Math.hypot(dx, dy) || 1;
-    const vx = (dx/len) * SHOT_SPEED;
-    const vy = (dy/len) * SHOT_SPEED;
-    projectiles.push(new Projectile(ox, oy, vx, vy, this.team));
-    this.ink -= INK_COST;
-    this.shotCooldown = 0.18;
-    this.shootFlash = 0.12;
-    playSound('shoot', this.team);
-  }
+  // ── AI logic ──────────────────────────────────────────────────
+  aiLogic(opponent, dt) {
+    let ax = 0, ay = 0;
+    let wantShoot = false, wantRelease = false, wantSpecial = false;
+    let aimAngle = this.angle;
 
-  // ── AI logic ────────────────────────────────────────────────
-  aiInput(opponent, dt) {
-    let moveX = 0, wantJump = false, wantShoot = false;
-    let aimX = this.x, aimY = this.y - 14;
-
-    // Find most unpainted floor tile
+    // Retarget periodically
     if (this.aiTimer <= 0) {
-      this.aiTimer = 0.8 + Math.random() * 1.2;
-      this.aiTarget = this.findBestTarget();
+      this.aiTimer = 0.6 + Math.random() * 1.0;
+      this.aiTarget = this.aiPickTarget(opponent);
     }
 
-    const tx = this.aiTarget.x;
-    const dist = tx - this.x;
+    const tx = this.aiTarget.x, ty = this.aiTarget.y;
+    const dist = Math.hypot(tx - this.x, ty - this.y);
 
-    // Move toward target
-    if (Math.abs(dist) > 20) {
-      moveX = dist > 0 ? 1 : -1;
+    if (dist > 25) {
+      ax = (tx - this.x) / dist;
+      ay = (ty - this.y) / dist;
     }
 
-    // Jump over obstacles or onto platforms
-    if (this.onGround && this.aiTimer < 0.3) {
-      const ahead = isSolid(
-        Math.floor((this.x + this.facing * TS * 1.5) / TS),
-        Math.floor((this.y - 1) / TS)
-      );
-      if (ahead) wantJump = true;
+    // Avoid pillars & walls predictively
+    const nextX = this.x + this.vx * 5 + ax * 20;
+    const nextY = this.y + this.vy * 5 + ay * 20;
+    if (isWall(nextX, nextY)) {
+      ax += (Math.random()-0.5) * 2;
+      ay += (Math.random()-0.5) * 2;
     }
 
-    // Periodically jump to reach platforms
-    if (this.onGround && Math.random() < 0.008 && this.aiTarget.y < this.y - TS) {
-      wantJump = true;
+    // Aim
+    if (opponent && !opponent.dead) {
+      aimAngle = Math.atan2(opponent.y - this.y, opponent.x - this.x);
+    } else {
+      const target = this.aiPickUnpaintedTile();
+      if (target) aimAngle = Math.atan2(target.y - this.y, target.x - this.x);
     }
 
-    // Shoot: aim at unpainted tiles or at player
+    // Shooting / charging
     this.aiShootTimer -= dt;
-    if (this.aiShootTimer <= 0 && this.ink >= INK_COST + 5) {
-      this.aiShootTimer = 0.25 + Math.random() * 0.4;
-      wantShoot = true;
+    if (this.aiShootTimer <= 0 && this.ammo >= SHOT_COST && this.shotCooldown <= 0) {
+      this.aiShootTimer = 0.3 + Math.random() * 0.5;
 
-      // 40% chance to aim at opponent
-      if (opponent && Math.random() < 0.4) {
-        aimX = opponent.x;
-        aimY = opponent.y - 14;
+      // 25% chance to charge
+      if (Math.random() < 0.25 && this.ammo >= CHARGE_COST) {
+        if (!this.aiCharging) {
+          this.aiCharging = true;
+          this.aiChargeDur = CHARGE_TIME * (0.7 + Math.random() * 0.4);
+          this.charging = true;
+          this.chargeLevel = 0;
+        }
+        wantShoot = true;
+        this.aiChargeDur -= dt;
+        if (this.aiChargeDur <= 0) {
+          this.aiCharging = false;
+          wantRelease = true;
+          wantShoot = false;
+        }
       } else {
-        // Aim at nearest unpainted floor tile
-        const t = this.findUnpaintedTile();
-        if (t) { aimX = t.x; aimY = t.y; }
+        wantShoot = true;
+        wantRelease = true; // single shot
       }
     }
 
-    return [moveX, wantJump, wantShoot, aimX, aimY];
+    // Special
+    if (this.specialMeter >= MAX_SPECIAL && this.specialCooldown <= 0 && Math.random() < 0.02) {
+      wantSpecial = true;
+    }
+
+    return [ax, ay, wantShoot, wantRelease, wantSpecial, aimAngle];
   }
 
-  findBestTarget() {
-    // Find unpainted floor tile near center / enemy territory
+  aiPickTarget(opponent) {
+    // 30% chase opponent, 70% go paint
+    if (opponent && !opponent.dead && Math.random() < 0.3) {
+      return { x: opponent.x + (Math.random()-0.5)*60, y: opponent.y + (Math.random()-0.5)*60 };
+    }
+    const t = this.aiPickUnpaintedTile();
+    return t || { x: ARENA.x + Math.random()*ARENA.w, y: ARENA.y + Math.random()*ARENA.h };
+  }
+
+  aiPickUnpaintedTile() {
+    const ownOwner = this.team === 'A' ? 1 : 2;
     let best = null, bestScore = -Infinity;
-    const ownOwner = this.team === 'A' ? 1 : 2;
-    for (let r = 0; r < ROWS_N; r++) {
-      for (let c = 0; c < COLS_N; c++) {
-        if (MAP[r][c] !== 2) continue;
-        const owner = tileOwner[r][c];
-        if (owner === ownOwner) continue;
-        const tx = c * TS + TS/2, ty = r * TS;
-        const dist = Math.hypot(tx - this.x, ty - this.y);
-        // Prefer tiles on same height level and not too far
-        const score = (owner === 0 ? 50 : 100) - dist * 0.1 + (Math.random() * 30);
-        if (score > bestScore) { bestScore = score; best = { x: tx, y: ty }; }
-      }
-    }
-    return best || { x: W/2, y: 12 * TS };
-  }
-
-  findUnpaintedTile() {
-    const ownOwner = this.team === 'A' ? 1 : 2;
-    let best = null, bestDist = Infinity;
-    for (let r = 0; r < ROWS_N; r++) {
-      for (let c = 0; c < COLS_N; c++) {
-        if (MAP[r][c] !== 2) continue;
-        if (tileOwner[r][c] === ownOwner) continue;
-        const tx = c * TS + TS/2, ty = r * TS;
-        const d = Math.hypot(tx - this.x, ty - this.y);
-        if (d < bestDist) { bestDist = d; best = { x: tx, y: ty }; }
-      }
+    // Sample random tiles
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const col = Math.floor(Math.random() * OWN_COLS);
+      const row = Math.floor(Math.random() * OWN_ROWS);
+      const cx2 = col * OWN_TS + OWN_TS/2, cy = row * OWN_TS + OWN_TS/2;
+      if (isWall(cx2, cy)) continue;
+      if (tileOwner[row][col] === ownOwner) continue;
+      const d = Math.hypot(cx2 - this.x, cy - this.y);
+      const score = (tileOwner[row][col] === 0 ? 20 : 80) - d * 0.05 + Math.random()*15;
+      if (score > bestScore) { bestScore = score; best = { x: cx2, y: cy }; }
     }
     return best;
   }
 
-  // ── Drawing ─────────────────────────────────────────────────
+  // ── Drawing ────────────────────────────────────────────────────
   draw() {
-    if (this.dead) return;
+    if (this.dead) {
+      // Respawn countdown bubble
+      const t = RESPAWN_SEC - this.respawnTimer;
+      ctx.save();
+      ctx.globalAlpha = 0.6;
+      ctx.fillStyle = PAL[this.team].main;
+      ctx.font = `bold ${18 + Math.sin(t*4)*2}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText(Math.ceil(this.respawnTimer) + '…', this.respawnX, this.respawnY);
+      ctx.restore();
+      return;
+    }
 
-    const px = Math.round(this.x);
-    const py = Math.round(this.y);
-    const dir = this.facing;
-    const t = this.animTime;
+    // Respawn blink
+    if (this.respawnFlash > 0 && Math.floor(this.respawnFlash * 8) % 2 === 0) return;
+
+    const px = this.x, py = this.y;
     const c = PAL[this.team];
-    const state = this.state;
+    const t = this.animTime;
+    const moving = this.speed > 0.5;
+    const charge = this.chargeLevel;
 
     ctx.save();
     ctx.translate(px, py);
 
-    // Squash & stretch
-    let sx = 1, sy = 1;
-    if (state === 'land')  { sx = 1.3; sy = 0.7; }
-    if (state === 'jump')  { sx = 0.8; sy = 1.25; }
-    if (state === 'squat') { sx = 1.2; sy = 0.75; }
-    ctx.scale(sx, sy);
+    // Hit flash
+    if (this.hitFlash > 0) {
+      ctx.shadowColor = '#FFFFFF';
+      ctx.shadowBlur = 30;
+    }
 
-    // Shadow
-    ctx.fillStyle = PAL.shadow;
+    // Shadow (not rotated)
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
     ctx.beginPath();
-    ctx.ellipse(0, 2/sy, 12*sx, 4, 0, 0, Math.PI*2);
+    ctx.ellipse(3, 5, 16, 10, this.angle * 0.3, 0, Math.PI*2);
     ctx.fill();
 
-    // Legs
-    const legBob = state === 'walk'
-      ? Math.sin(t * 14) * 3
-      : state === 'squat' ? 4 : 0;
-    const legH = state === 'squat' ? 5 : 9;
+    ctx.rotate(this.angle);
 
+    // Walk bob
+    const bob = moving ? Math.sin(t * 18) * 1.5 : 0;
+    ctx.translate(0, bob);
+
+    const R = 13;
+
+    // Charge aura (behind everything)
+    if (charge > 0.15) {
+      const pulseR = R + 5 + charge * 10 + Math.sin(t * 12) * 2;
+      const grad = ctx.createRadialGradient(0, 0, R, 0, 0, pulseR);
+      grad.addColorStop(0, c.glow + Math.floor(charge * 180).toString(16).padStart(2,'0'));
+      grad.addColorStop(1, c.glow + '00');
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(0, 0, pulseR, 0, Math.PI*2); ctx.fill();
+    }
+
+    // Ink tank (back)
     ctx.fillStyle = c.dark;
-    ctx.beginPath(); // left leg
-    ctx.roundRect(-7, -legH + legBob, 6, legH, 2);
-    ctx.fill();
-    ctx.beginPath(); // right leg
-    ctx.roundRect(1, -legH - legBob, 6, legH, 2);
-    ctx.fill();
+    ctx.beginPath(); ctx.ellipse(-R*0.7, 0, R*0.5, R*0.45, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.beginPath(); ctx.arc(-R*0.82, -R*0.18, R*0.18, 0, Math.PI*2); ctx.fill();
 
-    // Feet
-    ctx.fillStyle = c.darkBody || c.dark;
-    ctx.fillRect(-8, -4, 7, 4);
-    ctx.fillRect(1,  -4, 7, 4);
+    // Body outline (dark)
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.beginPath(); ctx.arc(0.6, 0.6, R+1, 0, Math.PI*2); ctx.fill();
 
-    // Body
-    ctx.fillStyle = c.body;
-    ctx.beginPath();
-    ctx.roundRect(-9, -22, 18, 13, 4);
-    ctx.fill();
+    // Body main
+    const bGrad = ctx.createRadialGradient(-3, -3, 2, 0, 0, R);
+    bGrad.addColorStop(0, c.light);
+    bGrad.addColorStop(0.55, c.main);
+    bGrad.addColorStop(1, c.dark);
+    ctx.fillStyle = bGrad;
+    ctx.beginPath(); ctx.arc(0, 0, R, 0, Math.PI*2); ctx.fill();
 
-    // Outline
-    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.roundRect(-9, -22, 18, 13, 4); ctx.stroke();
+    // Body pattern dots
+    ctx.fillStyle = c.dark + '50';
+    ctx.beginPath(); ctx.arc(3, 4, R*0.35, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(-4, 5, R*0.2, 0, Math.PI*2); ctx.fill();
 
-    // Head (big, cute)
-    ctx.fillStyle = c.light;
-    ctx.beginPath();
-    ctx.ellipse(dir * 1, -30, 11, 10, 0, 0, Math.PI*2);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,0.2)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    // Specular highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.beginPath(); ctx.arc(-4, -4, R*0.35, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.beginPath(); ctx.arc(-5, -5, R*0.14, 0, Math.PI*2); ctx.fill();
 
-    // Ear/antenna things
-    ctx.fillStyle = c.main;
-    ctx.beginPath();
-    ctx.ellipse(dir * -4, -39, 3, 5, -0.3 * dir, 0, Math.PI*2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(dir * 5, -40, 2.5, 6, 0.3 * dir, 0, Math.PI*2);
-    ctx.fill();
-
-    // Eyes (expressive!)
-    const eyeX = dir * 4;
-    const blinkH = Math.abs(Math.sin(t * 0.7)) < 0.05 ? 1 : 5;
+    // Eyes (front-right side, facing right = angle 0)
+    const eyeX = R*0.42;
+    const blinkFactor = Math.abs(Math.sin(t*0.6)) < 0.04 ? 0.15 : 1;
 
     // Eye white
-    ctx.fillStyle = '#FFFEF0';
-    ctx.beginPath();
-    ctx.ellipse(eyeX, -31, 5, blinkH * 0.8, 0, 0, Math.PI*2);
-    ctx.fill();
+    ctx.fillStyle = '#FAFFF0';
+    ctx.beginPath(); ctx.ellipse(eyeX, -R*0.3, 3.5, 3.5*blinkFactor, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(eyeX, R*0.3, 3.5, 3.5*blinkFactor, 0, 0, Math.PI*2); ctx.fill();
+
+    // Iris (team color)
+    ctx.fillStyle = c.glow;
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath(); ctx.ellipse(eyeX + 0.8, -R*0.3, 2, 2*blinkFactor, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(eyeX + 0.8, R*0.3, 2, 2*blinkFactor, 0, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 1;
 
     // Pupil
-    ctx.fillStyle = '#1A1A2E';
-    ctx.beginPath();
-    ctx.ellipse(eyeX + dir, -31, 2.5, blinkH * 0.55, 0, 0, Math.PI*2);
-    ctx.fill();
+    ctx.fillStyle = '#0A0A20';
+    ctx.beginPath(); ctx.ellipse(eyeX + 1.2, -R*0.3, 1.2, 1.2*blinkFactor, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(eyeX + 1.2, R*0.3, 1.2, 1.2*blinkFactor, 0, 0, Math.PI*2); ctx.fill();
 
-    // Eye highlight
-    ctx.fillStyle = 'white';
-    ctx.beginPath();
-    ctx.ellipse(eyeX + dir * 0.5, -32.5, 1.2, 1.2, 0, 0, Math.PI*2);
-    ctx.fill();
+    // Eye shine
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.beginPath(); ctx.arc(eyeX, -R*0.35, 1, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(eyeX, R*0.25, 1, 0, Math.PI*2); ctx.fill();
 
-    // Cheek blush
-    ctx.fillStyle = c.eye + '66';
-    ctx.beginPath();
-    ctx.ellipse(eyeX - dir * 5, -28, 3, 2, 0, 0, Math.PI*2);
-    ctx.fill();
-
-    // Mouth
-    ctx.strokeStyle = '#1A1A2E';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    if (state === 'shoot' || this.shootFlash > 0) {
-      // Excited mouth
-      ctx.arc(eyeX * 0.3, -26.5, 3, 0, Math.PI);
-    } else if (state === 'squat') {
-      // Worried
-      ctx.arc(eyeX * 0.3, -24.5, 2, Math.PI, 0);
-    } else {
-      // Smile
-      ctx.arc(eyeX * 0.3, -27, 2.5, 0, Math.PI);
-    }
-    ctx.stroke();
-
-    // Ink shooter arm
-    const armExtend = this.shootFlash > 0 ? 6 : 0;
-    const armY = -18;
+    // Nozzle
+    const nozzleLen = 14 + charge * 8;
     ctx.fillStyle = c.dark;
-    ctx.beginPath();
-    ctx.roundRect(dir * 7, armY - 2, dir * (14 + armExtend), 5, 2);
-    ctx.fill();
-
-    // Nozzle tip
+    ctx.fillRect(R - 2, -3.5, nozzleLen, 7);
     ctx.fillStyle = c.main;
-    ctx.beginPath();
-    ctx.roundRect(dir * (19 + armExtend), armY - 3.5, dir * 6, 8, 2);
-    ctx.fill();
-
-    // Shoot flash
-    if (this.shootFlash > 0) {
-      ctx.globalAlpha = this.shootFlash / 0.12 * 0.8;
-      ctx.fillStyle = c.light;
+    ctx.fillRect(R + nozzleLen - 3, -4, 6, 8);
+    // Nozzle tip glow when charged
+    if (charge > 0) {
+      ctx.save();
+      ctx.globalAlpha = charge * 0.9;
+      ctx.shadowColor = c.glow;
+      ctx.shadowBlur = 15;
+      ctx.fillStyle = c.glow;
       ctx.beginPath();
-      ctx.arc(dir * (28 + armExtend), armY + 0.5, 7, 0, Math.PI*2);
+      ctx.arc(R + nozzleLen + 3, 0, 4 + charge * 5, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Orbiting charge drops
+    if (charge > 0.25) {
+      const numDrops = Math.floor(3 + charge * 8);
+      for (let i = 0; i < numDrops; i++) {
+        const orbitR = R + 6 + charge * 12;
+        const a = t * 4.5 + (i / numDrops) * Math.PI*2;
+        ctx.save();
+        ctx.globalAlpha = charge * 0.75;
+        ctx.fillStyle = c.light;
+        ctx.shadowColor = c.glow;
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.arc(Math.cos(a)*orbitR, Math.sin(a)*orbitR, 1.5 + charge*2.5, 0, Math.PI*2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    // Special meter ring
+    if (this.specialMeter > 0) {
+      const ringR = R + 8;
+      const pct = this.specialMeter / MAX_SPECIAL;
+      ctx.save();
+      ctx.strokeStyle = pct >= 1 ? c.glow : c.main;
+      ctx.lineWidth = 2.5;
+      ctx.globalAlpha = pct >= 1 ? (0.7 + 0.3 * Math.sin(t * 6)) : 0.5;
+      if (pct >= 1) { ctx.shadowColor = c.glow; ctx.shadowBlur = 12; }
+      ctx.beginPath();
+      ctx.arc(0, 0, ringR, -Math.PI/2, -Math.PI/2 + Math.PI*2 * pct);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // HP dots (left of character, fixed)
+    ctx.restore(); // pop rotation
+    ctx.save();
+    ctx.translate(px, py);
+    for (let i = 0; i < MAX_HP; i++) {
+      ctx.fillStyle = i < this.hp ? c.main : 'rgba(255,255,255,0.15)';
+      ctx.shadowColor = i < this.hp ? c.glow : 'transparent';
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.arc(-PLAYER_R - 8, -PLAYER_R + i*8 - 4, 3.5, 0, Math.PI*2);
       ctx.fill();
     }
-
-    // Ink gauge on body (tiny bar)
-    const barW = 14, barH = 3;
-    const inkPct = this.ink / 100;
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillRect(-barW/2, -24, barW, barH);
-    ctx.fillStyle = inkPct > 0.3 ? c.main : '#FF4444';
-    ctx.fillRect(-barW/2, -24, barW * inkPct, barH);
-
     ctx.restore();
   }
 }
 
-// ── Background ─────────────────────────────────────────────────
-const bgBuildings = [];
-(function initBG() {
-  // Far buildings
-  for (let i = 0; i < 12; i++) {
-    bgBuildings.push({
-      x: i * 70 + Math.random() * 30,
-      w: 40 + Math.random() * 50,
-      h: 80 + Math.random() * 160,
-      layer: 0,
-      windows: Array.from({length: 6}, () => ({ x: Math.random(), y: Math.random(), on: Math.random() > 0.4 })),
-    });
-  }
-  // Near buildings
-  for (let i = 0; i < 8; i++) {
-    bgBuildings.push({
-      x: i * 100 + Math.random() * 40,
-      w: 60 + Math.random() * 70,
-      h: 60 + Math.random() * 100,
-      layer: 1,
-      windows: Array.from({length: 4}, () => ({ x: Math.random(), y: Math.random(), on: Math.random() > 0.3 })),
-    });
-  }
+// ── Rendering ─────────────────────────────────────────────────────
+// Background city (precomputed buildings)
+const bgBldgs = [];
+(function() {
+  // Layered city-pop skyline
+  const layers = [
+    { count: 14, wMin: 35, wMax: 65, hMin: 60, hMax: 160, yBase: H*0.55 },
+    { count: 10, wMin: 50, wMax: 90, hMin: 40, hMax: 100, yBase: H*0.65 },
+  ];
+  layers.forEach((l, li) => {
+    for (let i = 0; i < l.count; i++) {
+      const w = l.wMin + Math.random()*(l.wMax-l.wMin);
+      const h = l.hMin + Math.random()*(l.hMax-l.hMin);
+      bgBldgs.push({
+        x: i*(W/l.count) + Math.random()*20,
+        y: l.yBase - h, w, h, layer: li,
+        wins: Array.from({length: 8}, () => ({
+          row: Math.random(), col: Math.random(),
+          on: Math.random() > 0.35,
+          color: Math.random() < 0.5 ? 0 : 1,
+        })),
+      });
+    }
+  });
 })();
 
 function drawBackground(t) {
-  // Night sky gradient
-  const skyGrad = ctx.createLinearGradient(0, 0, 0, H * 0.65);
-  skyGrad.addColorStop(0, '#0A0A2A');
-  skyGrad.addColorStop(0.5, '#1A1850');
-  skyGrad.addColorStop(1, '#2A1840');
-  ctx.fillStyle = skyGrad;
+  // Sky gradient
+  const sky = ctx.createLinearGradient(0, 0, 0, H*0.7);
+  sky.addColorStop(0,   '#04040E');
+  sky.addColorStop(0.5, '#0C0820');
+  sky.addColorStop(1,   '#180828');
+  ctx.fillStyle = sky;
   ctx.fillRect(0, 0, W, H);
 
   // Stars
-  ctx.fillStyle = 'rgba(255,255,255,0.6)';
-  // Deterministic stars
-  for (let i = 0; i < 60; i++) {
-    const sx = ((i * 137 + 11) % W);
-    const sy = ((i * 97 + 7) % (H * 0.5));
-    const twinkle = 0.5 + 0.5 * Math.sin(t * (0.5 + i * 0.1) + i);
-    ctx.globalAlpha = twinkle * 0.8;
-    ctx.fillRect(sx, sy, 1.5, 1.5);
+  for (let i = 0; i < 80; i++) {
+    const sx = ((i*137+11)%W), sy = ((i*97+7)%(H*0.55));
+    const tw = 0.3 + 0.7*Math.abs(Math.sin(t*(0.4+i*0.08)+i));
+    ctx.globalAlpha = tw * 0.7;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(sx, sy, i%7===0 ? 2 : 1.5, i%7===0 ? 2 : 1.5);
   }
   ctx.globalAlpha = 1;
 
   // Moon
-  ctx.fillStyle = '#FFF8D0';
-  ctx.beginPath(); ctx.arc(680, 55, 28, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle = '#FFED80';
-  ctx.beginPath(); ctx.arc(680, 55, 20, 0, Math.PI*2); ctx.fill();
-  // Moon craters
-  ctx.fillStyle = 'rgba(220,200,100,0.4)';
-  ctx.beginPath(); ctx.arc(672, 48, 6, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc(686, 62, 4, 0, Math.PI*2); ctx.fill();
-
-  // Neon sign glow
-  const glowColors = ['rgba(255,107,107,', 'rgba(78,205,196,', 'rgba(255,230,109,'];
-  for (let i = 0; i < 3; i++) {
-    ctx.fillStyle = glowColors[i] + '0.03)';
-    ctx.beginPath();
-    ctx.arc(150 + i * 250, 100, 100 + 30 * Math.sin(t + i), 0, Math.PI*2);
-    ctx.fill();
-  }
-
-  // Far buildings (layer 0)
-  bgBuildings.filter(b => b.layer === 0).forEach(b => {
-    const by = H * 0.65 - b.h;
-    ctx.fillStyle = PAL.bld1;
-    ctx.fillRect(b.x, by, b.w, b.h);
-    // Windows
-    b.windows.forEach(w => {
-      if (!w.on) return;
-      const wFlicker = Math.sin(t * 0.3 + w.x * 10) > -0.95;
-      if (!wFlicker) return;
-      ctx.fillStyle = PAL.win + '99';
-      ctx.fillRect(b.x + w.x * (b.w - 8), by + w.y * (b.h - 8), 6, 4);
-    });
-  });
-
-  // Near buildings (layer 1) with slight parallax glow
-  bgBuildings.filter(b => b.layer === 1).forEach(b => {
-    const by = H * 0.72 - b.h;
-    ctx.fillStyle = PAL.bld2;
-    ctx.fillRect(b.x, by, b.w, b.h);
-    b.windows.forEach(w => {
-      if (!w.on) return;
-      ctx.fillStyle = w.x < 0.5 ? PAL.win : PAL.winD;
-      ctx.fillRect(b.x + w.x * (b.w - 10), by + w.y * (b.h - 10), 8, 5);
-    });
-    // Rooftop neon line
-    ctx.strokeStyle = Math.random() < 0.01 ? 'rgba(255,107,107,0.6)' : 'rgba(78,205,196,0.4)';
-    ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(b.x, by); ctx.lineTo(b.x + b.w, by); ctx.stroke();
-  });
-}
-
-// ── Tile Renderer ──────────────────────────────────────────────
-function drawTiles() {
-  for (let r = 0; r < ROWS_N; r++) {
-    for (let c = 0; c < COLS_N; c++) {
-      const tile = MAP[r][c];
-      const tx = c * TS, ty = r * TS;
-      if (tile === 1) {
-        // Solid wall
-        ctx.fillStyle = PAL.wall;
-        ctx.fillRect(tx, ty, TS, TS);
-        // Light edge (top & left)
-        ctx.fillStyle = PAL.wallL;
-        ctx.fillRect(tx, ty, TS, 2);
-        ctx.fillRect(tx, ty, 2, TS);
-        // Dark edge (bottom & right)
-        ctx.fillStyle = PAL.wallD;
-        ctx.fillRect(tx, ty + TS - 2, TS, 2);
-        ctx.fillRect(tx + TS - 2, ty, 2, TS);
-        // Checkerboard detail
-        if ((r + c) % 2 === 0) {
-          ctx.fillStyle = 'rgba(255,255,255,0.05)';
-          ctx.fillRect(tx + 2, ty + 2, TS - 4, TS - 4);
-        }
-      } else if (tile === 2) {
-        // Paintable floor — show tile outline, paint bleeds through from below
-        ctx.fillStyle = PAL.floorD;
-        ctx.fillRect(tx, ty, TS, TS);
-        ctx.fillStyle = PAL.floor;
-        ctx.fillRect(tx + 1, ty + 1, TS - 2, TS - 2);
-        // Subtle grid dot
-        ctx.fillStyle = 'rgba(0,0,0,0.08)';
-        ctx.fillRect(tx + TS/2 - 1, ty + TS/2 - 1, 2, 2);
-      }
-    }
-  }
-}
-
-// ── HUD ────────────────────────────────────────────────────────
-function drawHUD(percents, timeLeft) {
-  const barW = 220, barH = 22;
-  const margin = 20;
-
-  // Timer background
-  const timerX = W/2 - 40, timerY = 8;
-  ctx.fillStyle = 'rgba(10,10,26,0.7)';
-  roundRect2(ctx, timerX - 8, timerY - 4, 96, 36, 8);
-  ctx.fill();
-
-  // Timer text
-  const mins = Math.floor(timeLeft / 60);
-  const secs = Math.floor(timeLeft % 60);
-  const timerStr = `${mins}:${secs.toString().padStart(2,'0')}`;
-  ctx.fillStyle = timeLeft < 30 ? '#FF4444' : PAL.gold;
-  ctx.font = 'bold 28px "Courier New"';
-  ctx.textAlign = 'center';
-  ctx.fillText(timerStr, W/2, timerY + 24);
-
-  // Team A bar (left)
-  ctx.fillStyle = 'rgba(10,10,26,0.7)';
-  roundRect2(ctx, margin - 4, 8, barW + 8, barH + 8, 6);
-  ctx.fill();
-
-  ctx.fillStyle = '#333355';
-  ctx.fillRect(margin, 12, barW, barH);
-
-  const aW = barW * (percents.a / 100);
-  const aGrad = ctx.createLinearGradient(margin, 0, margin + aW, 0);
-  aGrad.addColorStop(0, PAL.A.dark);
-  aGrad.addColorStop(1, PAL.A.light);
-  ctx.fillStyle = aGrad;
-  ctx.fillRect(margin, 12, aW, barH);
-
-  ctx.fillStyle = PAL.text;
-  ctx.font = 'bold 13px "Courier New"';
-  ctx.textAlign = 'left';
-  ctx.fillText(`TEAM ${String.fromCharCode(0x1F534)} ${percents.a.toFixed(1)}%`, margin + 4, 12 + 15);
-
-  // Team B bar (right)
-  ctx.fillStyle = 'rgba(10,10,26,0.7)';
-  roundRect2(ctx, W - margin - barW - 12, 8, barW + 8, barH + 8, 6);
-  ctx.fill();
-
-  ctx.fillStyle = '#333355';
-  ctx.fillRect(W - margin - barW, 12, barW, barH);
-
-  const bW = barW * (percents.b / 100);
-  const bGrad = ctx.createLinearGradient(W - margin - barW, 0, W - margin, 0);
-  bGrad.addColorStop(0, PAL.B.light);
-  bGrad.addColorStop(1, PAL.B.dark);
-  ctx.fillStyle = bGrad;
-  ctx.fillRect(W - margin - barW + (barW - bW), 12, bW, barH);
-
-  ctx.fillStyle = PAL.text;
-  ctx.textAlign = 'right';
-  ctx.fillText(`${percents.b.toFixed(1)}% ${String.fromCharCode(0x1F535)} TEAM`, W - margin - 4, 12 + 15);
-
-  // Controls hint (tiny)
-  ctx.fillStyle = 'rgba(255,248,240,0.4)';
-  ctx.font = '10px "Courier New"';
-  ctx.textAlign = 'center';
-  ctx.fillText('WASD: 移動 / マウス: 照準・射撃 / W or SPACE: ジャンプ', W/2, H - 6);
-}
-
-// ── Title Screen ───────────────────────────────────────────────
-let titleAnim = 0;
-function drawTitle(t) {
-  // Background
-  drawBackground(t);
-
-  // Logo backdrop
-  ctx.fillStyle = 'rgba(10,10,26,0.6)';
-  roundRect2(ctx, W/2 - 240, H/2 - 120, 480, 220, 16);
-  ctx.fill();
-
-  // Neon border
-  ctx.strokeStyle = PAL.A.main;
-  ctx.lineWidth = 3;
-  ctx.shadowColor = PAL.A.main;
+  ctx.fillStyle = '#FFF0D0';
+  ctx.shadowColor = '#FFE080';
   ctx.shadowBlur = 20;
-  roundRect2(ctx, W/2 - 240, H/2 - 120, 480, 220, 16);
-  ctx.stroke();
+  ctx.beginPath(); ctx.arc(680, 50, 26, 0, Math.PI*2); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#FFE890';
+  ctx.beginPath(); ctx.arc(680, 50, 18, 0, Math.PI*2); ctx.fill();
+
+  // Neon cross-lights
+  [
+    {x:60, y:100, col:'rgba(255,15,123,0.06)'},
+    {x:W/2, y:120, col:'rgba(0,229,255,0.05)'},
+    {x:740, y:100, col:'rgba(255,15,123,0.05)'},
+  ].forEach(l => {
+    const g = ctx.createRadialGradient(l.x, l.y, 0, l.x, l.y, 120);
+    g.addColorStop(0, l.col); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  });
+
+  // Buildings
+  bgBldgs.forEach(b => {
+    const dark  = b.layer === 0 ? '#10102A' : '#181830';
+    const mid   = b.layer === 0 ? '#181832' : '#20203A';
+    const light = b.layer === 0 ? '#22224A' : '#28284A';
+
+    ctx.fillStyle = dark;
+    ctx.fillRect(b.x+3, b.y+3, b.w, b.h); // shadow
+    ctx.fillStyle = mid;
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    // Top lighter face
+    ctx.fillStyle = light;
+    ctx.fillRect(b.x, b.y, b.w, 4);
+    ctx.fillRect(b.x, b.y, 2, b.h);
+
+    // Windows
+    const wCols = Math.floor(b.w / 14);
+    const wRows = Math.floor(b.h / 14);
+    b.wins.forEach(w => {
+      if (!w.on) return;
+      const wr = Math.floor(w.row * wRows), wc = Math.floor(w.col * wCols);
+      const wx = b.x + 4 + wc*14, wy = b.y + 4 + wr*14;
+      const flicker = Math.sin(t*0.2 + w.row*7 + w.col*5) > -0.97;
+      if (!flicker) return;
+      ctx.fillStyle = w.color === 0 ? 'rgba(255,220,100,0.55)' : 'rgba(255,100,50,0.45)';
+      ctx.fillRect(wx, wy, 8, 6);
+    });
+
+    // Rooftop neon
+    if (b.layer === 1) {
+      const nc = b.x % 2 === 0 ? PAL.A.glow : PAL.B.glow;
+      ctx.strokeStyle = nc + '66';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(b.x+b.w, b.y); ctx.stroke();
+    }
+  });
+}
+
+function drawArena() {
+  // Outer wall area
+  ctx.fillStyle = PAL.bg;
+  ctx.fillRect(0, 0, W, ARENA.y);
+  ctx.fillRect(0, ARENA.y+ARENA.h, W, H-ARENA.y-ARENA.h);
+  ctx.fillRect(0, 0, ARENA.x, H);
+  ctx.fillRect(ARENA.x+ARENA.w, 0, W-ARENA.x-ARENA.w, H);
+
+  // Floor
+  const floorGrad = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, 420);
+  floorGrad.addColorStop(0, '#14142C');
+  floorGrad.addColorStop(1, '#0C0C1E');
+  ctx.fillStyle = floorGrad;
+  ctx.fillRect(ARENA.x, ARENA.y, ARENA.w, ARENA.h);
+
+  // Grid
+  ctx.strokeStyle = PAL.grid;
+  ctx.lineWidth = 1;
+  for (let x = ARENA.x; x <= ARENA.x+ARENA.w; x += 32) {
+    ctx.beginPath(); ctx.moveTo(x, ARENA.y); ctx.lineTo(x, ARENA.y+ARENA.h); ctx.stroke();
+  }
+  for (let y = ARENA.y; y <= ARENA.y+ARENA.h; y += 32) {
+    ctx.beginPath(); ctx.moveTo(ARENA.x, y); ctx.lineTo(ARENA.x+ARENA.w, y); ctx.stroke();
+  }
+
+  // Arena border glow
+  ctx.strokeStyle = 'rgba(80,80,200,0.4)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(ARENA.x+1, ARENA.y+1, ARENA.w-2, ARENA.h-2);
+
+  // Corner marks
+  const cm = 20;
+  [
+    [ARENA.x+4, ARENA.y+4],
+    [ARENA.x+ARENA.w-4, ARENA.y+4],
+    [ARENA.x+4, ARENA.y+ARENA.h-4],
+    [ARENA.x+ARENA.w-4, ARENA.y+ARENA.h-4],
+  ].forEach(([cx,cy]) => {
+    ctx.strokeStyle = 'rgba(120,120,255,0.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cx-cm, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy+Math.sign(cy-H/2)*cm); ctx.stroke();
+  });
+
+  // Pillars (after paint, so they cover it)
+  for (const p of PILLARS) {
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(p.x+5, p.y+5, p.w, p.h);
+
+    // Bottom face (darkest)
+    ctx.fillStyle = PAL.wallD;
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+
+    // Front faces
+    ctx.fillStyle = PAL.wall;
+    ctx.fillRect(p.x, p.y, p.w, p.h - 4);
+
+    // Top face (lighter, HD-2D style top-down highlight)
+    ctx.fillStyle = PAL.wallL;
+    ctx.fillRect(p.x, p.y, p.w, 5);
+    ctx.fillRect(p.x, p.y, 4, p.h);
+
+    // Grid detail on pillar
+    ctx.fillStyle = 'rgba(255,255,255,0.04)';
+    for (let i = 0; i < Math.floor(p.w/16); i++) {
+      ctx.fillRect(p.x + i*16, p.y, 1, p.h);
+    }
+    for (let i = 0; i < Math.floor(p.h/16); i++) {
+      ctx.fillRect(p.x, p.y + i*16, p.w, 1);
+    }
+
+    // Neon border
+    ctx.strokeStyle = 'rgba(80,80,200,0.5)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(p.x+0.5, p.y+0.5, p.w-1, p.h-1);
+  }
+}
+
+function drawPaint() {
+  ctx.save();
+  // Clip to arena floor (not over pillars or outside arena)
+  ctx.beginPath();
+  ctx.rect(ARENA.x, ARENA.y, ARENA.w, ARENA.h);
+  for (const p of PILLARS) {
+    // Subtract pillars from clip (reverse winding)
+    ctx.rect(p.x, p.y + p.h, p.w, -p.h);
+  }
+  // Just draw full paint canvas — pillars are drawn on top anyway
+  ctx.restore();
+
+  ctx.save();
+  ctx.globalAlpha = 0.88;
+  ctx.drawImage(paintCanvas, 0, 0);
+  // Neon glow pass
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.18;
+  ctx.drawImage(paintCanvas, 0, 0);
+  ctx.restore();
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    const a = Math.max(0, p.life / p.maxLife);
+    ctx.save();
+    ctx.globalAlpha = a * 0.9;
+    if (p.glow) { ctx.shadowColor = p.glow; ctx.shadowBlur = 10; }
+    ctx.fillStyle = p.color;
+    if (p.square) {
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot || 0);
+      ctx.fillRect(-p.r/2, -p.r/2, p.r, p.r);
+    } else {
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+function drawSpecialRings() {
+  for (const e of specialEffects) {
+    const c = PAL[e.team];
+    ctx.save();
+    ctx.globalAlpha = e.alpha;
+    ctx.shadowColor = c.glow;
+    ctx.shadowBlur = 25;
+    ctx.strokeStyle = c.glow;
+    ctx.lineWidth = 6 * e.alpha;
+    ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, Math.PI*2); ctx.stroke();
+    ctx.lineWidth = 3 * e.alpha;
+    ctx.strokeStyle = c.light;
+    ctx.beginPath(); ctx.arc(e.x, e.y, e.r2, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ── HUD ───────────────────────────────────────────────────────────
+function drawHUD(pA, pB, percents, timeLeft) {
+  const t = gTime;
+
+  // ── Timer ──
+  const tx = W/2, ty = 14;
+  ctx.fillStyle = 'rgba(8,8,22,0.8)';
+  roundRect(ctx, tx-52, ty-2, 104, 40, 8); ctx.fill();
+  const mins = Math.floor(timeLeft/60), secs = Math.floor(timeLeft%60);
+  ctx.fillStyle = timeLeft < 30 ? (Math.floor(t*4)%2?'#FF4444':'#FF8888') : PAL.gold;
+  ctx.shadowColor = timeLeft < 30 ? '#FF0000' : PAL.gold;
+  ctx.shadowBlur = 12;
+  ctx.font = 'bold 30px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(`${mins}:${secs.toString().padStart(2,'0')}`, tx, ty + 26);
   ctx.shadowBlur = 0;
 
-  // Game title
-  const pulse = 1 + 0.04 * Math.sin(t * 3);
-  ctx.save();
-  ctx.translate(W/2, H/2 - 60);
-  ctx.scale(pulse, pulse);
+  // ── Coverage bars ──
+  const bx = 110, bw = W - 220, bh = 16, by = 10;
+  ctx.fillStyle = '#111128';
+  roundRect(ctx, bx-2, by-2, bw+4, bh+4, 4); ctx.fill();
 
-  // Shadow text
+  const aW = bw * percents.a/100;
+  if (aW > 0) {
+    const ag = ctx.createLinearGradient(bx, 0, bx+aW, 0);
+    ag.addColorStop(0, PAL.A.dark); ag.addColorStop(1, PAL.A.main);
+    ctx.fillStyle = ag;
+    ctx.shadowColor = PAL.A.glow; ctx.shadowBlur = 8;
+    ctx.fillRect(bx, by, aW, bh);
+  }
+  const bW = bw * percents.b/100;
+  if (bW > 0) {
+    const bg2 = ctx.createLinearGradient(bx+bw-bW, 0, bx+bw, 0);
+    bg2.addColorStop(0, PAL.B.main); bg2.addColorStop(1, PAL.B.dark);
+    ctx.fillStyle = bg2;
+    ctx.shadowColor = PAL.B.glow; ctx.shadowBlur = 8;
+    ctx.fillRect(bx+bw-bW, by, bW, bh);
+  }
+  ctx.shadowBlur = 0;
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = 1;
+  roundRect(ctx, bx-2, by-2, bw+4, bh+4, 4); ctx.stroke();
+
+  // ── Team A info (bottom-left) ──
+  drawPlayerHUD(pA,  20, H-60, 'left');
+  // ── Team B info (bottom-right) ──
+  drawPlayerHUD(pB, W-20, H-60, 'right');
+
+  // ── Coverage % labels ──
+  ctx.fillStyle = PAL.A.light;
+  ctx.font = 'bold 11px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(`${percents.a.toFixed(1)}%`, bx+3, by+bh-3);
+  ctx.fillStyle = PAL.B.light;
+  ctx.textAlign = 'right';
+  ctx.fillText(`${percents.b.toFixed(1)}%`, bx+bw-3, by+bh-3);
+
+  // ── Controls hint ──
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('WASD: 移動　マウス: 照準　LB: 射撃/長押しでチャージ　RB or E: 必殺技', W/2, H-6);
+}
+
+function drawPlayerHUD(player, x, y, side) {
+  if (!player) return;
+  const c = PAL[player.team];
+  const isLeft = side === 'left';
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(8,8,22,0.75)';
+  const boxW = 155, boxH = 50;
+  const bx = isLeft ? x : x - boxW;
+  roundRect(ctx, bx, y-4, boxW, boxH, 8); ctx.fill();
+
+  // Team label
+  ctx.fillStyle = c.main;
+  ctx.shadowColor = c.glow; ctx.shadowBlur = 8;
+  ctx.font = 'bold 13px monospace';
+  ctx.textAlign = isLeft ? 'left' : 'right';
+  ctx.fillText(`TEAM ${player.team}`, isLeft ? bx+8 : x-8, y+12);
+  ctx.shadowBlur = 0;
+
+  // HP hearts
+  for (let i = 0; i < MAX_HP; i++) {
+    const hx = isLeft ? bx + 8 + i*18 : x - 8 - (MAX_HP-1-i)*18 - 14;
+    ctx.fillStyle = i < player.hp ? c.main : 'rgba(255,255,255,0.12)';
+    ctx.shadowColor = i < player.hp ? c.glow : 'transparent';
+    ctx.shadowBlur = i < player.hp ? 8 : 0;
+    ctx.fillText('♥', hx, y + 28);
+  }
+  ctx.shadowBlur = 0;
+
+  // Ammo dots
+  for (let i = 0; i < MAX_AMMO; i++) {
+    const filled = player.ammo >= (i + 1) - 0.1;
+    const hx = isLeft ? bx + 8 + i*17 : x - 8 - (MAX_AMMO-1-i)*17 - 6;
+    ctx.fillStyle = filled ? c.main : 'rgba(255,255,255,0.1)';
+    ctx.shadowColor = filled ? c.glow : 'transparent';
+    ctx.shadowBlur = filled ? 6 : 0;
+    ctx.beginPath(); ctx.arc(hx, y+42, 4, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.shadowBlur = 0;
+
+  // Special label
+  const spPct = player.specialMeter / MAX_SPECIAL;
+  const spColor = spPct >= 1 ? c.glow : c.dark;
+  ctx.strokeStyle = spColor;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = spPct >= 1 ? c.glow : 'transparent';
+  ctx.shadowBlur = spPct >= 1 ? 10 : 0;
+  const spW = 130, spH = 5;
+  const spx = isLeft ? bx + 12 : x - 12 - spW;
+  const spy = y + 15;
+  ctx.fillStyle = '#111128';
+  ctx.fillRect(spx, spy, spW, spH);
+  const sg = ctx.createLinearGradient(spx, 0, spx+spW, 0);
+  sg.addColorStop(0, c.dark); sg.addColorStop(1, c.glow);
+  ctx.fillStyle = sg;
+  ctx.fillRect(spx, spy, spW * spPct, spH);
+  ctx.strokeRect(spx, spy, spW, spH);
+  ctx.shadowBlur = 0;
+
+  // "SPECIAL!" label when full
+  if (spPct >= 1 && Math.floor(gTime*4)%2===0) {
+    ctx.fillStyle = c.glow;
+    ctx.shadowColor = c.glow; ctx.shadowBlur = 12;
+    ctx.font = 'bold 11px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('★SPECIAL★', spx + spW/2, spy - 2);
+    ctx.shadowBlur = 0;
+  }
+
+  ctx.restore();
+}
+
+// ── Title screen ──────────────────────────────────────────────────
+function drawTitle(t) {
+  drawBackground(t);
+
+  // Top-down arena preview behind glass
+  ctx.save();
+  ctx.globalAlpha = 0.35;
+  drawArena();
+  ctx.restore();
+
+  // Dark overlay
+  ctx.fillStyle = 'rgba(4,4,14,0.65)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Logo backdrop
+  ctx.fillStyle = 'rgba(8,8,25,0.88)';
+  roundRect(ctx, W/2-250, H/2-130, 500, 260, 18); ctx.fill();
+
+  // Neon border (dual color)
+  ctx.save();
+  ctx.strokeStyle = PAL.A.main;
+  ctx.lineWidth = 2.5;
+  ctx.shadowColor = PAL.A.glow; ctx.shadowBlur = 20;
+  roundRect(ctx, W/2-250, H/2-130, 500, 260, 18); ctx.stroke();
+  ctx.strokeStyle = PAL.B.main;
+  ctx.shadowColor = PAL.B.glow;
+  ctx.globalAlpha = 0.5;
+  roundRect(ctx, W/2-246, H/2-126, 492, 252, 16); ctx.stroke();
+  ctx.restore();
+
+  // Title text
+  const pulse = 1 + 0.035*Math.sin(t*2.8);
+  ctx.save();
+  ctx.translate(W/2, H/2 - 55);
+  ctx.scale(pulse, pulse);
+  const tg = ctx.createLinearGradient(-210, -45, 210, 5);
+  tg.addColorStop(0,   PAL.A.light);
+  tg.addColorStop(0.35,PAL.A.main);
+  tg.addColorStop(0.5, PAL.gold);
+  tg.addColorStop(0.65,PAL.B.main);
+  tg.addColorStop(1,   PAL.B.light);
   ctx.fillStyle = 'rgba(0,0,0,0.5)';
-  ctx.font = 'bold 58px "Courier New"';
+  ctx.font = 'bold 54px monospace';
   ctx.textAlign = 'center';
   ctx.fillText('ChromaSplash', 3, 3);
-
-  // Gradient text
-  const titleGrad = ctx.createLinearGradient(-200, -40, 200, 10);
-  titleGrad.addColorStop(0,   PAL.A.main);
-  titleGrad.addColorStop(0.3, PAL.gold);
-  titleGrad.addColorStop(0.7, PAL.B.main);
-  titleGrad.addColorStop(1,   PAL.A.light);
-  ctx.fillStyle = titleGrad;
-  ctx.font = 'bold 58px "Courier New"';
+  ctx.fillStyle = tg;
+  ctx.shadowColor = PAL.A.glow; ctx.shadowBlur = 25;
   ctx.fillText('ChromaSplash', 0, 0);
   ctx.restore();
 
-  // Subtitle
-  ctx.fillStyle = 'rgba(255,248,240,0.7)';
-  ctx.font = '14px "Courier New"';
+  // v2 badge
+  ctx.fillStyle = PAL.B.main;
+  ctx.font = 'bold 13px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('~ RETRO CITY POP PAINT ACTION ~', W/2, H/2 - 10);
+  ctx.fillText('v2  —  TOP-DOWN NEON EDITION', W/2, H/2-10);
 
-  // Demo characters on title
-  const bobA = Math.sin(t * 2) * 3;
-  const bobB = Math.sin(t * 2 + Math.PI) * 3;
-  players[0].x = W/2 - 90; players[0].y = H/2 + 40 + bobA;
-  players[1].x = W/2 + 90; players[1].y = H/2 + 40 + bobB;
-  players[0].facing = 1; players[1].facing = -1;
-  players[0].state = 'idle'; players[1].state = 'idle';
-  players[0].animTime = t; players[1].animTime = t + 1;
-  players[0].draw(); players[1].draw();
-
-  // Press space
-  const blink = Math.floor(t * 2) % 2;
-  if (blink) {
-    ctx.fillStyle = PAL.gold;
-    ctx.font = 'bold 18px "Courier New"';
-    ctx.textAlign = 'center';
-    ctx.fillText('▶  PRESS SPACE  ◀', W/2, H/2 + 80);
+  // Two characters previewing on title
+  if (gPlayers.length >= 2) {
+    gPlayers[0].x = W/2 - 80; gPlayers[0].y = H/2 + 38;
+    gPlayers[0].angle = -0.3; gPlayers[0].animTime = t;
+    gPlayers[0].chargeLevel = 0; gPlayers[0].specialMeter = 80;
+    gPlayers[1].x = W/2 + 80; gPlayers[1].y = H/2 + 38;
+    gPlayers[1].angle = Math.PI + 0.3; gPlayers[1].animTime = t + 0.8;
+    gPlayers[1].chargeLevel = 0; gPlayers[1].specialMeter = 100;
+    gPlayers[0].dead = false; gPlayers[1].dead = false;
+    gPlayers[0].draw(); gPlayers[1].draw();
   }
 
-  // Controls hint
-  ctx.fillStyle = 'rgba(255,248,240,0.5)';
-  ctx.font = '11px "Courier New"';
-  ctx.fillText('WASD: 移動   SPACE/W: ジャンプ   マウスLB: 射撃', W/2, H/2 + 108);
-  ctx.fillText('vs AI  ·  制限時間3分  ·  塗った面積で勝敗決定！', W/2, H/2 + 123);
+  // Press space
+  if (Math.floor(t*2)%2) {
+    ctx.fillStyle = PAL.gold;
+    ctx.shadowColor = PAL.gold; ctx.shadowBlur = 15;
+    ctx.font = 'bold 16px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('▶  PRESS SPACE TO START  ◀', W/2, H/2+92);
+    ctx.shadowBlur = 0;
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.font = '11px monospace';
+  ctx.fillText('WASD: 移動　マウス: 照準/射撃/チャージ　RB or E: 必殺技（溜め技）', W/2, H/2 + 113);
+  ctx.fillText('vs AI  ·  制限時間3分  ·  塗った面積が多い方の勝ち！', W/2, H/2 + 128);
 }
 
-// ── Result Screen ──────────────────────────────────────────────
-let resultAnim = 0;
+// ── Countdown screen ──────────────────────────────────────────────
+function drawCountdown(cd) {
+  const txt = cd > 0 ? cd.toString() : 'GO!';
+  const pulse = 1 + 0.1*Math.sin(gTime*8);
+
+  ctx.save();
+  ctx.translate(W/2, H/2);
+  ctx.scale(pulse, pulse);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.font = 'bold 90px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(txt, 3, 33);
+  ctx.fillStyle = cd > 0 ? PAL.gold : PAL.B.glow;
+  ctx.shadowColor = cd > 0 ? PAL.gold : PAL.B.glow;
+  ctx.shadowBlur = 40;
+  ctx.fillText(txt, 0, 30);
+  ctx.restore();
+}
+
+// ── Result screen ─────────────────────────────────────────────────
 function drawResult(percents, t) {
   drawBackground(t);
 
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  ctx.drawImage(paintCanvas, 0, 0);
+  ctx.restore();
+
+  ctx.fillStyle = 'rgba(4,4,14,0.72)';
+  ctx.fillRect(0, 0, W, H);
+
   const winTeam = percents.a >= percents.b ? 'A' : 'B';
-  const loTeam  = winTeam === 'A' ? 'B' : 'A';
   const c = PAL[winTeam];
 
   // Backdrop
-  ctx.fillStyle = 'rgba(10,10,26,0.75)';
-  roundRect2(ctx, W/2 - 260, H/2 - 140, 520, 280, 20);
-  ctx.fill();
+  ctx.fillStyle = 'rgba(8,8,25,0.9)';
+  roundRect(ctx, W/2-270, H/2-150, 540, 300, 20); ctx.fill();
 
-  ctx.strokeStyle = c.main;
-  ctx.lineWidth = 4;
-  ctx.shadowColor = c.main;
-  ctx.shadowBlur = 30;
-  roundRect2(ctx, W/2 - 260, H/2 - 140, 520, 280, 20);
-  ctx.stroke();
+  ctx.strokeStyle = c.glow;
+  ctx.lineWidth = 3;
+  ctx.shadowColor = c.glow; ctx.shadowBlur = 30;
+  roundRect(ctx, W/2-270, H/2-150, 540, 300, 20); ctx.stroke();
   ctx.shadowBlur = 0;
 
-  // "GAME OVER" header
+  // Header
   ctx.fillStyle = PAL.gold;
-  ctx.font = 'bold 18px "Courier New"';
+  ctx.font = 'bold 15px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('★  BATTLE OVER  ★', W/2, H/2 - 110);
+  ctx.fillText('◆  BATTLE OVER  ◆', W/2, H/2-120);
 
-  // Winner announcement
-  const pulse = 1 + 0.05 * Math.sin(t * 4);
+  // Winner
+  const pp = 1 + 0.04*Math.sin(t*3.5);
   ctx.save();
-  ctx.translate(W/2, H/2 - 58);
-  ctx.scale(pulse, pulse);
-  const wGrad = ctx.createLinearGradient(-200, -35, 200, 5);
-  wGrad.addColorStop(0, c.light);
-  wGrad.addColorStop(0.5, c.main);
-  wGrad.addColorStop(1, c.light);
-  ctx.fillStyle = wGrad;
-  ctx.font = 'bold 48px "Courier New"';
+  ctx.translate(W/2, H/2-60);
+  ctx.scale(pp, pp);
+  const wg = ctx.createLinearGradient(-200,-35,200,5);
+  wg.addColorStop(0, c.light); wg.addColorStop(0.5, c.glow); wg.addColorStop(1, c.light);
+  ctx.fillStyle = wg;
+  ctx.shadowColor = c.glow; ctx.shadowBlur = 35;
+  ctx.font = 'bold 52px monospace';
+  ctx.textAlign = 'center';
   ctx.fillText(`TEAM ${winTeam} WIN!`, 0, 0);
   ctx.restore();
 
-  // Paint coverage bars
-  const bx = W/2 - 200, by = H/2 + 8, bw = 400, bh = 28;
-  ctx.fillStyle = '#222244';
-  ctx.fillRect(bx, by, bw, bh);
+  // Coverage bar
+  const bx = W/2-210, bw = 420, bh = 30, by = H/2+14;
+  ctx.fillStyle = '#111128';
+  roundRect(ctx, bx-2, by-2, bw+4, bh+4, 6); ctx.fill();
 
-  const aFill = bw * percents.a / 100;
-  const aGrad2 = ctx.createLinearGradient(bx, 0, bx + aFill, 0);
-  aGrad2.addColorStop(0, PAL.A.dark); aGrad2.addColorStop(1, PAL.A.light);
-  ctx.fillStyle = aGrad2;
-  ctx.fillRect(bx, by, aFill, bh);
+  if (percents.a > 0) {
+    const aW = bw*percents.a/100;
+    const ag = ctx.createLinearGradient(bx,0,bx+aW,0);
+    ag.addColorStop(0,PAL.A.dark); ag.addColorStop(1,PAL.A.main);
+    ctx.fillStyle=ag; ctx.shadowColor=PAL.A.glow; ctx.shadowBlur=8;
+    ctx.fillRect(bx,by,aW,bh);
+  }
+  if (percents.b > 0) {
+    const bW2 = bw*percents.b/100;
+    const bg2 = ctx.createLinearGradient(bx+bw-bW2,0,bx+bw,0);
+    bg2.addColorStop(0,PAL.B.main); bg2.addColorStop(1,PAL.B.dark);
+    ctx.fillStyle=bg2; ctx.shadowColor=PAL.B.glow; ctx.shadowBlur=8;
+    ctx.fillRect(bx+bw-bW2,by,bW2,bh);
+  }
+  ctx.shadowBlur=0;
+  ctx.strokeStyle='rgba(255,255,255,0.15)'; ctx.lineWidth=1;
+  roundRect(ctx,bx-2,by-2,bw+4,bh+4,6); ctx.stroke();
 
-  const bFill = bw * percents.b / 100;
-  const bGrad2 = ctx.createLinearGradient(bx + aFill, 0, bx + bw, 0);
-  bGrad2.addColorStop(0, PAL.B.light); bGrad2.addColorStop(1, PAL.B.dark);
-  ctx.fillStyle = bGrad2;
-  ctx.fillRect(bx + aFill, by, bFill, bh);
+  ctx.fillStyle=PAL.A.light; ctx.font='bold 13px monospace'; ctx.textAlign='left';
+  ctx.fillText(`TEAM A  ${percents.a.toFixed(1)}%`, bx+6, by+20);
+  ctx.fillStyle=PAL.B.light; ctx.textAlign='right';
+  ctx.fillText(`${percents.b.toFixed(1)}%  TEAM B`, bx+bw-6, by+20);
 
-  // Labels
-  ctx.fillStyle = PAL.text;
-  ctx.font = 'bold 13px "Courier New"';
-  ctx.textAlign = 'left';
-  ctx.fillText(`TEAM A  ${percents.a.toFixed(1)}%`, bx + 6, by + 19);
-  ctx.textAlign = 'right';
-  ctx.fillText(`${percents.b.toFixed(1)}%  TEAM B`, bx + bw - 6, by + 19);
-
-  // Rematch prompt
-  const blink2 = Math.floor(t * 2) % 2;
-  if (blink2) {
-    ctx.fillStyle = PAL.gold;
-    ctx.font = 'bold 16px "Courier New"';
-    ctx.textAlign = 'center';
-    ctx.fillText('▶  PRESS SPACE TO PLAY AGAIN  ◀', W/2, H/2 + 100);
+  // Blink restart
+  if (Math.floor(t*2)%2) {
+    ctx.fillStyle=PAL.gold; ctx.shadowColor=PAL.gold; ctx.shadowBlur=12;
+    ctx.font='bold 15px monospace'; ctx.textAlign='center';
+    ctx.fillText('▶  PRESS SPACE TO PLAY AGAIN  ◀', W/2, H/2+110);
+    ctx.shadowBlur=0;
   }
 }
 
-// ── Countdown ─────────────────────────────────────────────────
-function drawCountdown(cd) {
-  ctx.fillStyle = 'rgba(255,248,240,0.9)';
-  ctx.font = 'bold 96px "Courier New"';
-  ctx.textAlign = 'center';
-  const txt = cd > 0 ? cd.toString() : 'GO!';
-  ctx.shadowColor = PAL.gold;
-  ctx.shadowBlur = 30;
-  ctx.fillText(txt, W/2, H/2 + 30);
-  ctx.shadowBlur = 0;
+// ── Utilities ─────────────────────────────────────────────────────
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y); ctx.lineTo(x+w-r, y); ctx.arcTo(x+w,y,x+w,y+r,r);
+  ctx.lineTo(x+w,y+h-r); ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  ctx.lineTo(x+r,y+h); ctx.arcTo(x,y+h,x,y+h-r,r);
+  ctx.lineTo(x,y+r); ctx.arcTo(x,y,x+r,y,r);
+  ctx.closePath();
 }
 
-// ── Utilities ──────────────────────────────────────────────────
-function roundRect2(c, x, y, w, h, r) {
-  c.beginPath();
-  c.moveTo(x + r, y);
-  c.lineTo(x + w - r, y);
-  c.arcTo(x + w, y, x + w, y + r, r);
-  c.lineTo(x + w, y + h - r);
-  c.arcTo(x + w, y + h, x + w - r, y + h, r);
-  c.lineTo(x + r, y + h);
-  c.arcTo(x, y + h, x, y + h - r, r);
-  c.lineTo(x, y + r);
-  c.arcTo(x, y, x + r, y, r);
-  c.closePath();
-}
-
-// Polyfill roundRect for older browsers
-if (!CanvasRenderingContext2D.prototype.roundRect) {
-  CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
-    roundRect2(this, x, y, w, h, typeof r === 'number' ? r : r[0]);
-    return this;
-  };
-}
-
-// ── Game State ─────────────────────────────────────────────────
-let gameState = 'title';
+// ── Game state ────────────────────────────────────────────────────
+let gState = 'title';  // title | countdown | play | result
+let gTime = 0;
 let gameTimer = GAME_SEC;
-let countdownVal = 3;
-let countdownTimer = 0;
-let resultPercents = { a: 0, b: 0 };
-let players = [];
-let globalTime = 0;
-let lastPercentUpdate = 0;
-let cachedPercents = { a: 0, b: 0 };
+let cdVal = 3, cdTimer = 0;
+let resultPercents = { a:0, b:0 };
+let gPlayers = [];
+let cachedPercents = { a:0, b:0 };
+let percentTimer = 0;
 
 function createPlayers() {
-  players = [
-    new Player(120, 12 * TS, 'A', false),
-    new Player(W - 120, 12 * TS, 'B', true),
+  gPlayers = [
+    new Player(ARENA.x + 90,  ARENA.y + ARENA.h/2, 'A', false),
+    new Player(ARENA.x + ARENA.w - 90, ARENA.y + ARENA.h/2, 'B', true),
   ];
 }
 
-function initTitle() {
-  gameState = 'title';
-  stopBGM();
-  createPlayers();
-  // Clear paint
-  pCtx.clearRect(0, 0, W, H);
-  for (let r = 0; r < ROWS_N; r++)
-    for (let c = 0; c < COLS_N; c++)
-      tileOwner[r][c] = 0;
+function resetPaint() {
+  pCtx.clearRect(0,0,W,H);
+  tileOwner = Array.from({length:OWN_ROWS}, () => new Uint8Array(OWN_COLS));
+  pendingSplats.length = 0;
+  specialEffects.length = 0;
   projectiles.length = 0;
   particles.length = 0;
+}
+
+function initTitle() {
+  gState = 'title';
+  stopBGM();
+  createPlayers();
+  resetPaint();
 }
 
 function startGame() {
-  gameState = 'countdown';
-  countdownVal = 3;
-  countdownTimer = 1;
+  gState = 'countdown';
+  cdVal = 3; cdTimer = 1;
   gameTimer = GAME_SEC;
   createPlayers();
-  pCtx.clearRect(0, 0, W, H);
-  for (let r = 0; r < ROWS_N; r++)
-    for (let c = 0; c < COLS_N; c++)
-      tileOwner[r][c] = 0;
-  projectiles.length = 0;
-  particles.length = 0;
-  cachedPercents = { a: 0, b: 0 };
-
-  // Initial paint near each player
-  paintSplat(120, 12 * TS, 'A', 40);
-  paintSplat(W - 120, 12 * TS, 'B', 40);
+  resetPaint();
+  cachedPercents = { a:0, b:0 };
+  // Initial paint at spawn
+  paintCircle(gPlayers[0].x, gPlayers[0].y, 'A', 45);
+  paintCircle(gPlayers[1].x, gPlayers[1].y, 'B', 45);
 }
 
 function endGame() {
-  gameState = 'result';
+  gState = 'result';
   resultPercents = getPaintPercents();
   stopBGM();
-  playSound('win', resultPercents.a >= resultPercents.b ? 'A' : 'B');
-  // Confetti burst
-  for (let i = 0; i < 8; i++) {
-    setTimeout(() => {
-      spawnConfetti(Math.random() * W, H * 0.3, 15);
-    }, i * 200);
+  sfx('win', resultPercents.a >= resultPercents.b ? 'A' : 'B');
+  for (let i=0; i<10; i++) {
+    setTimeout(() => spawnConfetti(Math.random()*W, H*0.25, 18), i*150);
   }
 }
 
-// ── Game Loop ──────────────────────────────────────────────────
-let lastTime = 0;
+function onSpacePress() {
+  if (gState==='title') startGame();
+  else if (gState==='result') initTitle();
+}
 
+// ── Main loop ──────────────────────────────────────────────────────
+let lastT = 0;
 function frame(now) {
   requestAnimationFrame(frame);
-  const dt = Math.min((now - lastTime) / 1000, 0.05);
-  lastTime = now;
-  globalTime += dt;
-  const t = globalTime;
+  const dt = Math.min((now - lastT)/1000, 0.05);
+  lastT = now;
+  gTime += dt;
+  const t = gTime;
 
-  // Clear game canvas
-  ctx.clearRect(0, 0, W, H);
+  ctx.clearRect(0,0,W,H);
 
-  if (gameState === 'title') {
+  if (gState === 'title') {
     drawTitle(t);
+    return;
+  }
 
-  } else if (gameState === 'countdown') {
+  if (gState === 'countdown') {
     drawBackground(t);
+    drawArena();
+    drawPaint();
+    // Draw arena again to put pillars on top of paint
+    for (const p of PILLARS) {
+      ctx.fillStyle = PAL.wallD;
+      ctx.fillRect(p.x, p.y, p.w, p.h);
+      ctx.fillStyle = PAL.wall;
+      ctx.fillRect(p.x, p.y, p.w, p.h - 4);
+      ctx.fillStyle = PAL.wallL;
+      ctx.fillRect(p.x, p.y, p.w, 5);
+      ctx.fillRect(p.x, p.y, 4, p.h);
+    }
+    gPlayers.forEach(p => p.draw());
+    drawCountdown(cdVal);
 
-    // Paint canvas
-    ctx.save();
-    ctx.globalAlpha = 0.85;
-    ctx.drawImage(paintCanvas, 0, 0);
-    ctx.restore();
+    cdTimer -= dt;
+    if (cdTimer <= 0) {
+      cdVal--;
+      cdTimer = 1;
+      if (cdVal < 0) { gState = 'play'; startBGM(); }
+    }
+    return;
+  }
 
-    drawTiles();
-    players[0].draw();
-    players[1].draw();
-    drawCountdown(countdownVal);
+  if (gState === 'play') {
+    gameTimer -= dt;
+    if (gameTimer <= 0) { gameTimer = 0; endGame(); return; }
 
-    countdownTimer -= dt;
-    if (countdownTimer <= 0) {
-      countdownVal--;
-      countdownTimer = 1;
-      if (countdownVal < 0) {
-        gameState = 'play';
-        startBGM();
+    // Update
+    updateSplats(dt);
+    updateSpecialEffects(dt);
+
+    gPlayers[0].update(dt, gPlayers[1]);
+    gPlayers[1].update(dt, gPlayers[0]);
+
+    // Cross-death special gain
+    for (const pl of gPlayers) {
+      if (pl.dead && pl.respawnTimer > RESPAWN_SEC - 0.1) {
+        const opp = gPlayers.find(p => p !== pl);
+        if (opp) opp.specialMeter = Math.min(MAX_SPECIAL, opp.specialMeter + SPECIAL_GAIN_HIT);
       }
     }
 
-  } else if (gameState === 'play') {
-    gameTimer -= dt;
-    if (gameTimer <= 0) {
-      gameTimer = 0;
-      endGame();
-      return;
-    }
-
-    // Update
-    players[0].update(dt, players[1]);
-    players[1].update(dt, players[0]);
-
-    for (let i = projectiles.length - 1; i >= 0; i--) {
-      projectiles[i].update();
-      if (projectiles[i].dead) projectiles.splice(i, 1);
+    for (let i=projectiles.length-1; i>=0; i--) {
+      projectiles[i].update(dt, gPlayers);
+      if (projectiles[i].dead) projectiles.splice(i,1);
     }
 
     updateParticles(dt);
 
-    // Cache paint percents every second
-    lastPercentUpdate += dt;
-    if (lastPercentUpdate > 1) {
+    percentTimer += dt;
+    if (percentTimer > 0.8) {
       cachedPercents = getPaintPercents();
-      lastPercentUpdate = 0;
+      percentTimer = 0;
     }
 
     // Render
     drawBackground(t);
+    drawArena();   // floor + outer walls
+    drawPaint();   // paint canvas (before pillars)
 
-    // Paint layer (slightly transparent so tiles show)
+    // Redraw pillars on top of paint
     ctx.save();
-    ctx.globalAlpha = 0.82;
-    ctx.drawImage(paintCanvas, 0, 0);
-    ctx.restore();
-
-    drawTiles();
-
-    for (const p of projectiles) p.draw();
-    players[0].draw();
-    players[1].draw();
-    drawParticles();
-
-    drawHUD(cachedPercents, gameTimer);
-
-    // Time warning flash
-    if (gameTimer < 30 && Math.floor(gameTimer * 4) % 2 === 0) {
-      ctx.fillStyle = 'rgba(255,60,60,0.08)';
-      ctx.fillRect(0, 0, W, H);
+    for (const p of PILLARS) {
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.fillRect(p.x+5, p.y+5, p.w, p.h);
+      ctx.fillStyle = PAL.wallD;
+      ctx.fillRect(p.x, p.y, p.w, p.h);
+      ctx.fillStyle = PAL.wall;
+      ctx.fillRect(p.x, p.y, p.w, p.h-4);
+      ctx.fillStyle = PAL.wallL;
+      ctx.fillRect(p.x, p.y, p.w, 5);
+      ctx.fillRect(p.x, p.y, 4, p.h);
+      ctx.strokeStyle = 'rgba(80,80,200,0.4)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(p.x+0.5, p.y+0.5, p.w-1, p.h-1);
     }
-
-  } else if (gameState === 'result') {
-    updateParticles(dt);
-
-    drawBackground(t);
-    ctx.save();
-    ctx.globalAlpha = 0.6;
-    ctx.drawImage(paintCanvas, 0, 0);
     ctx.restore();
-    drawTiles();
+
+    // Entities
+    drawSpecialRings();
+    for (const p of projectiles) p.draw();
+    gPlayers.forEach(p => p.draw());
     drawParticles();
+
+    // HUD
+    drawHUD(gPlayers[0], gPlayers[1], cachedPercents, gameTimer);
+
+    // Time warning
+    if (gameTimer < 30 && Math.floor(t*4)%2===0) {
+      ctx.fillStyle = 'rgba(255,40,40,0.07)';
+      ctx.fillRect(0,0,W,H);
+    }
+    return;
+  }
+
+  if (gState === 'result') {
+    updateParticles(dt);
     drawResult(resultPercents, t);
+    drawParticles();
   }
 }
 
-// ── Init ───────────────────────────────────────────────────────
+// ── Init ───────────────────────────────────────────────────────────
 initTitle();
-requestAnimationFrame(ts => { lastTime = ts; requestAnimationFrame(frame); });
+requestAnimationFrame(ts => { lastT = ts; requestAnimationFrame(frame); });
 </script>
 </body>
 </html>
