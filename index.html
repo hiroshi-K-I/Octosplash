@@ -207,6 +207,8 @@ const MAX_ROUNDS = 28;
 const SPEC_FULL  = 100;
 const SPEC_PAINT = 4;
 const SPEC_HIT   = 22;
+const SPEC_KILL  = 40;   // SP gain for triggering opponent respawn
+const SP_STEAL   = 25;   // SP stolen per hit
 const SPLASH_R   = 2;
 const WIN_PCT    = 60;
 
@@ -527,7 +529,7 @@ function tickAnim(dt){
       const{c,r}=cells[i]; paintCell(c,r,team,player);
       const{x,y}=cellPx(c,r); spawnInk(x,y,team,3);
       curAnim.painted=i+1;
-      if(opp&&cells[i].c===opp.col&&cells[i].r===opp.row) hitOpponent(player,opp);
+      if(opp&&cells[i].c===opp.col&&cells[i].r===opp.row) hitOpponent(player,opp,curAnim.dc,curAnim.dr);
     }
     const frac=p*cells.length, ci=Math.min(Math.floor(frac),cells.length-1), subP=frac-ci;
     if(cells.length>0){
@@ -562,6 +564,7 @@ function tickAnim(dt){
 class Player {
   constructor(col,row,team,isAI=false,charKey='SHOOTER'){
     this.col=col; this.row=row; this.drawC=col; this.drawR=row;
+    this.initCol=col; this.initRow=row;
     this.team=team; this.isAI=isAI;
     this.charKey=charKey; this.char=CHAR_DEFS[charKey];
     this.ammo=this.char.maxAmmo; this.sp=0;
@@ -571,13 +574,43 @@ class Player {
 }
 function isOnOwnPaint(player){ return paint[player.row][player.col]===(player.team==='A'?1:2); }
 function isLocked(player){ return RULES.TERRITORY_LOCK&&isOnOwnPaint(player); }
-function hitOpponent(attacker,victim){
+function respawnPlayer(player){
+  sfx('special',player.team);
+  const fc=player.col,fr=player.row;
+  player.col=player.initCol; player.row=player.initRow;
+  player.ammo=player.char.maxAmmo;
+  player.sp=0; player.hitFlash=1.4;
+  pushAnim({type:'move',player,fc,fr,tc:player.initCol,tr:player.initRow,dur:0.55});
+  const{x,y}=cellPx(player.initCol,player.initRow);
+  spawnInk(x,y,player.team,16);
+  paintCell(player.initCol,player.initRow,player.team,player);
+}
+function hitOpponent(attacker,victim,dc,dr){
   sfx('hit',attacker.team); victim.hitFlash=0.5;
-  attacker.sp=Math.min(SPEC_FULL,attacker.sp+SPEC_HIT);
+  // SP=0 on hit → respawn
+  if(victim.sp===0){
+    attacker.sp=Math.min(SPEC_FULL,attacker.sp+SPEC_KILL);
+    respawnPlayer(victim);
+    return;
+  }
+  // SP steal
+  const steal=Math.min(victim.sp,SP_STEAL);
+  victim.sp=Math.max(0,victim.sp-steal);
+  attacker.sp=Math.min(SPEC_FULL,attacker.sp+SPEC_HIT+steal);
+  // Knockback 1 cell in shot direction
+  if(dc!==undefined&&(dc!==0||dr!==0)){
+    const nc=victim.col+(dc||0), nr=victim.row+(dr||0);
+    if(!isWall(nc,nr)&&!(nc===attacker.col&&nr===attacker.row)){
+      const fc=victim.col,fr=victim.row;
+      victim.col=nc; victim.row=nr;
+      pushAnim({type:'move',player:victim,fc,fr,tc:nc,tr:nr,dur:0.13});
+    }
+  }
+  // Splash at victim's (post-knockback) position
   const cells=[];
-  for(let dr=-SPLASH_R;dr<=SPLASH_R;dr++) for(let dc=-SPLASH_R;dc<=SPLASH_R;dc++)
-    if(Math.abs(dc)+Math.abs(dr)<=SPLASH_R+1&&!isWall(victim.col+dc,victim.row+dr))
-      cells.push({c:victim.col+dc,r:victim.row+dr});
+  for(let dr2=-SPLASH_R;dr2<=SPLASH_R;dr2++) for(let dc2=-SPLASH_R;dc2<=SPLASH_R;dc2++)
+    if(Math.abs(dc2)+Math.abs(dr2)<=SPLASH_R+1&&!isWall(victim.col+dc2,victim.row+dr2))
+      cells.push({c:victim.col+dc2,r:victim.row+dr2});
   pushAnim({type:'splash',cells,team:attacker.team,player:attacker,dur:0.35});
 }
 
@@ -758,7 +791,11 @@ function execSpecial(player,opp){
   const cells=getSpecCells(player);
   sfx('special',player.team);
   pushAnim({type:'special',player,cells,dur:0.65});
-  if(cells.some(({c,r})=>c===opp.col&&r===opp.row)) hitOpponent(player,opp);
+  if(cells.some(({c,r})=>c===opp.col&&r===opp.row)){
+    const kdc=opp.col!==player.col?Math.sign(opp.col-player.col):0;
+    const kdr=opp.row!==player.row?Math.sign(opp.row-player.row):0;
+    hitOpponent(player,opp,kdc,kdr);
+  }
 }
 function execWait(player){
   const tv=player.team==='A'?1:2;
